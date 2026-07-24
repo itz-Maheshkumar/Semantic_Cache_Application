@@ -1,0 +1,127 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+*.egg-link
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+MANIFEST
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ===== Virtual environments =====
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ===== Environment variables / secrets =====
+.env
+.env.*
+*.key
+*.pem
+secrets.toml
+config_local.py
+
+# ===== Streamlit =====
+.streamlit/secrets.toml
+.streamlit/config.toml
+
+# ===== Jupyter =====
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ===== Testing / coverage =====
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+nosetests.xml
+test-results/
+
+# ===== Type checking / linting caches =====
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pyre/
+
+# ===== Machine learning / model artifacts =====
+*.pt
+*.pth
+*.bin
+*.onnx
+*.h5
+*.ckpt
+*.safetensors
+models/
+checkpoints/
+.cache/
+huggingface_cache/
+sentence_transformers_cache/
+
+# ===== FAISS index / cache data (runtime generated) =====
+*.index
+*.faiss
+*.pkl
+*.pickle
+cache_data/
+embeddings/
+vector_store/
+
+# ===== Logs =====
+logs/
+*.log
+log_*.csv
+
+# ===== Data files (avoid committing large/raw datasets) =====
+data/raw/
+data/interim/
+*.csv.bak
+
+# ===== IDE / editor =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.spyderproject
+.spyproject
+.ropeproject
+
+# ===== OS files =====
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ===== Misc =====
+*.bak
+*.tmp
+*.orig
