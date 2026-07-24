@@ -2,10 +2,6 @@
 
 A semantic caching layer for LLM applications that identifies semantically similar user queries and reuses previously generated responses, reducing latency, API cost, and redundant LLM calls. Includes a Streamlit analytics dashboard for monitoring cache performance.
 
-**Project by:** Maheshkumar V (25MCM022) — II MSc Computer Science
-**Project Guide:** Mrs. T. Kousiga, Assistant Professor
-**Department:** Computer Science, PSG College of Arts & Science
-
 ## Problem
 
 LLM applications frequently receive repeated or semantically similar queries. Each query triggers a new LLM call, increasing latency and operational cost, and existing systems lack an intelligent mechanism to reuse previous responses.
