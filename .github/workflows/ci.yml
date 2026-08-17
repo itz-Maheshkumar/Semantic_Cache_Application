@@ -35,4 +35,4 @@ jobs:
 
       - name: Run Pytest Suite
         run: |
-          pytest tests/ --verbose
+          python -m pytest tests/ --verbose
