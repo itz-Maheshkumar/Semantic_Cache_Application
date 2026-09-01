@@ -11,12 +11,21 @@ from typing import Optional
 class CacheResult:
     """
     Represents the outcome of a semantic cache lookup on a cache hit.
+
+    `similarity_score` is the score the hit was actually judged against: pure
+    cosine similarity in vector-only mode, or the blended hybrid score when
+    SemanticCache is running in hybrid (vector + BM25) mode. `vector_score`
+    and `bm25_score` surface the two component signals individually — they
+    are only populated on hits produced by hybrid search, and stay None
+    otherwise, so vector-only callers see the exact same shape as before.
     """
     query: str
     response: str
     similarity_score: float
     cached_at: str
     matched_query: Optional[str] = None
+    vector_score: Optional[float] = None
+    bm25_score: Optional[float] = None
 
     def to_dict(self) -> dict:
         """Convert result to a standard dictionary."""
@@ -26,6 +35,8 @@ class CacheResult:
             "similarity_score": self.similarity_score,
             "cached_at": self.cached_at,
             "matched_query": self.matched_query,
+            "vector_score": self.vector_score,
+            "bm25_score": self.bm25_score,
         }
 
 
