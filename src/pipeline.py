@@ -94,6 +94,18 @@ class CachePipeline:
                 "latency_ms": round(latency_ms, 2),
                 "cached_at": cached_result.cached_at,
                 "matched_query": cached_result.matched_query,
+                # Populated only when the cache is running in hybrid (vector + BM25)
+                # mode; None for a plain vector-only hit.
+                "vector_score": (
+                    round(cached_result.vector_score, 4)
+                    if cached_result.vector_score is not None
+                    else None
+                ),
+                "bm25_score": (
+                    round(cached_result.bm25_score, 4)
+                    if cached_result.bm25_score is not None
+                    else None
+                ),
             }
 
         # --- CACHE MISS ---
@@ -127,4 +139,6 @@ class CachePipeline:
             "latency_ms": round(latency_ms, 2),
             "cached_at": None,
             "matched_query": None,
+            "vector_score": None,
+            "bm25_score": None,
         }

@@ -10,7 +10,14 @@ import pandas as pd
 import streamlit as st
 
 from src.cache import SemanticCache
-from src.config import EMBEDDING_MODEL, SIMILARITY_THRESHOLD
+from src.config import (
+    EMBEDDING_MODEL,
+    SIMILARITY_THRESHOLD,
+    ENABLE_HYBRID_SEARCH,
+    VECTOR_WEIGHT,
+    BM25_WEIGHT,
+    HYBRID_SIMILARITY_THRESHOLD,
+)
 from src.embedder import Embedder
 from src.llm import LLMClient
 from src.pipeline import CachePipeline
@@ -105,22 +112,56 @@ with st.sidebar:
     st.title("Settings & Control")
 
     st.subheader("Cache Configuration")
-    similarity_threshold = st.slider(
-        "Similarity Threshold (Cosine)",
-        min_value=0.50,
-        max_value=0.99,
-        value=float(SIMILARITY_THRESHOLD),
-        step=0.01,
-        help="Queries with similarity score >= this value will trigger a Cache HIT.",
+
+    hybrid_mode = st.toggle(
+        "🔀 Hybrid Search (Vector + BM25)",
+        value=ENABLE_HYBRID_SEARCH,
+        help="Blend FAISS vector similarity with BM25 keyword scoring instead "
+        "of relying on vector similarity alone.",
     )
+
+    if hybrid_mode:
+        similarity_threshold = st.slider(
+            "Hybrid Similarity Threshold",
+            min_value=0.10,
+            max_value=0.99,
+            value=float(HYBRID_SIMILARITY_THRESHOLD),
+            step=0.01,
+            help="Queries with blended hybrid score >= this value will trigger a Cache HIT.",
+        )
+        vector_weight = st.slider(
+            "Vector Weight", min_value=0.0, max_value=1.0, value=float(VECTOR_WEIGHT), step=0.05,
+            help="Weight given to cosine similarity in the blended score.",
+        )
+        bm25_weight = st.slider(
+            "BM25 Weight", min_value=0.0, max_value=1.0, value=float(BM25_WEIGHT), step=0.05,
+            help="Weight given to normalized BM25 keyword score in the blended score.",
+        )
+    else:
+        similarity_threshold = st.slider(
+            "Similarity Threshold (Cosine)",
+            min_value=0.50,
+            max_value=0.99,
+            value=float(SIMILARITY_THRESHOLD),
+            step=0.01,
+            help="Queries with similarity score >= this value will trigger a Cache HIT.",
+        )
+        vector_weight, bm25_weight = VECTOR_WEIGHT, BM25_WEIGHT
 
     st.markdown("---")
     st.subheader("System Info")
     st.write(f"**Embedding Model:** `{EMBEDDING_MODEL}`")
+    st.write(f"**Retrieval Mode:** `{'Hybrid (Vector + BM25)' if hybrid_mode else 'Vector Only'}`")
 
-    # Retrieve instances
+    # Retrieve instances (cached across reruns; live settings are applied below)
     cache, request_logger, pipeline = get_components(similarity_threshold)
-    cache.threshold = similarity_threshold
+    cache.hybrid_enabled = hybrid_mode
+    if hybrid_mode:
+        cache.hybrid_threshold = similarity_threshold
+        cache.vector_weight = vector_weight
+        cache.bm25_weight = bm25_weight
+    else:
+        cache.threshold = similarity_threshold
 
     st.write(f"**Cached Entries:** `{cache.size}`")
 
@@ -234,7 +275,12 @@ with tab1:
                 st.markdown('<div class="badge-miss">❌ CACHE MISS</div>', unsafe_allow_html=True)
 
             st.write(f"**Latency:** `{result['latency_ms']:.2f} ms`")
-            st.write(f"**Similarity Score:** `{result['similarity_score']:.4f}`")
+            score_label = "Hybrid Score" if result.get("vector_score") is not None else "Similarity Score"
+            st.write(f"**{score_label}:** `{result['similarity_score']:.4f}`")
+            if result.get("vector_score") is not None:
+                st.caption(
+                    f"Vector: `{result['vector_score']:.4f}` · BM25: `{result['bm25_score']:.4f}`"
+                )
             if result["matched_query"]:
                 st.write(f"**Matched Cache Query:** *\"{result['matched_query']}\"*")
 

@@ -64,11 +64,57 @@ LLM applications frequently receive repeated or semantically similar queries (e.
 
 ---
 
+## 🔀 Hybrid Search (Vector + BM25)
+
+Pure vector similarity can miss queries that share an exact keyword, product code, or acronym with a cached query but happen to embed differently (e.g. a short query dominated by a rare identifier). Hybrid search addresses this by blending FAISS cosine similarity with **BM25** keyword search over the same cached queries, so lexical overlap can rescue a match that vector similarity alone would score too low.
+
+```
+                     ┌───────────────────────┐
+                     │     Incoming Query    │
+                     └───────────┬───────────┘
+                     ┌───────────┴───────────┐
+                     ▼                       ▼
+         ┌───────────────────────┐ ┌───────────────────────┐
+         │   FAISS Vector Search │ │    BM25 Keyword Search│
+         │   (semantic)          │ │   (lexical, rank_bm25)│
+         └───────────┬───────────┘ └───────────┬───────────┘
+                     │  top-K candidates        │  top-K candidates
+                     └───────────┬───────────────┘
+                                 ▼
+                 ┌─────────────────────────────────┐
+                 │  Score Fusion (src/hybrid_search)│
+                 │  hybrid = w_v·vector + w_b·bm25  │
+                 └─────────────────┬─────────────────┘
+                                   ▼
+                   Best candidate ≥ HYBRID_SIMILARITY_THRESHOLD?
+                          │                        │
+                          ▼ (Cache HIT)             ▼ (Cache MISS)
+              Return cached response         Call OpenAI API, cache the pair
+```
+
+1. **Independent retrieval**: each lookup queries FAISS (semantic) and a `BM25Okapi` index (lexical, `src/bm25_index.py`) over the same cached queries, each returning its own top-K candidates.
+2. **Score fusion** (`src/hybrid_search.py`): BM25's unbounded raw scores are min-max normalized to 0–1 across the candidate pool, then combined as `hybrid_score = VECTOR_WEIGHT * cosine_similarity + BM25_WEIGHT * bm25_normalized`. A candidate found by only one retriever isn't dropped — it scores 0 on the signal that missed it and can still win on the other.
+3. **Threshold check**: the top-ranked candidate is accepted as a **Cache HIT** if `hybrid_score >= HYBRID_SIMILARITY_THRESHOLD`.
+
+Hybrid search is **off by default** so existing vector-only behavior (and `SIMILARITY_THRESHOLD`) is unaffected unless explicitly enabled.
+
+| Setting | Default | Description |
+|---|---|---|
+| `ENABLE_HYBRID_SEARCH` | `false` | Turn hybrid retrieval on. |
+| `VECTOR_WEIGHT` / `BM25_WEIGHT` | `0.6` / `0.4` | Blend weights for each signal. |
+| `HYBRID_TOP_K` | `10` | Candidates each retriever contributes before ranking. |
+| `HYBRID_SIMILARITY_THRESHOLD` | `0.55` | Minimum blended score to accept a hit. |
+
+Set these in `.env` (see `.env.example`), or pass them directly to `SemanticCache(hybrid_enabled=True, ...)`. The Streamlit dashboard also has a **🔀 Hybrid Search** toggle in the sidebar, including live weight/threshold sliders and a per-query breakdown (vector score vs. BM25 score) in the Live Query Playground. Unit tests for the feature live in `tests/test_hybrid_search.py`.
+
+---
+
 ## 🛠️ Tech Stack
 
 - **Python 3.12** — Core application development
 - **Sentence Transformers** — Semantic vector embedding generation (`all-MiniLM-L6-v2`)
 - **FAISS (CPU)** — High-performance vector similarity search
+- **rank_bm25** — BM25 keyword search, blended with vector similarity for hybrid retrieval
 - **SQLite** — Persistent request logging and metric storage
 - **Streamlit** — Real-time analytics dashboard & query playground
 - **OpenAI API** — LLM response generation on cache miss
@@ -89,6 +135,8 @@ semantic-cache-project/
 │   ├── logger.py                # Structured logging utility
 │   ├── embedder.py              # Embedding Engine (Sentence Transformers)
 │   ├── cache.py                 # Semantic Cache Engine (FAISS + Storage)
+│   ├── bm25_index.py            # BM25 keyword search index (hybrid search)
+│   ├── hybrid_search.py         # Vector + BM25 score fusion (hybrid search)
 │   ├── llm.py                   # OpenAI API client wrapper with retries
 │   ├── models.py                # Data models (CacheResult, RequestLog)
 │   ├── request_logger.py        # SQLite logging & KPI aggregator
@@ -96,6 +144,7 @@ semantic-cache-project/
 ├── tests/                       # Automated unit & benchmark test suite
 │   ├── test_embedder.py
 │   ├── test_cache.py
+│   ├── test_hybrid_search.py
 │   ├── test_pipeline.py
 │   └── test_evaluation.py
 ├── scripts/
