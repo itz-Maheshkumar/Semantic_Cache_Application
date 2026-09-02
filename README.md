@@ -109,6 +109,24 @@ Set these in `.env` (see `.env.example`), or pass them directly to `SemanticCach
 
 ---
 
+## 🧹 Cache Eviction (TTL + LRU)
+
+A semantic cache that only ever grows eventually holds stale answers (the underlying facts changed) and wastes memory/disk on entries nobody queries anymore. Two independent, optional pruning policies address that:
+
+- **TTL (Time-To-Live)**: entries older than a configured age (from `cached_at`, i.e. absolute expiry from insertion — not from last use) are evicted.
+- **LRU (Least-Recently-Used)**: once the cache holds more than `CACHE_MAX_SIZE` entries, the least-recently-*accessed* ones are evicted until it fits — a cache **HIT** on an entry marks it as just-used (`last_accessed_at`), so a frequently-reused older entry survives longer than a stale one that was only ever queried once.
+
+Both are **off by default** (unbounded growth, exactly the original behavior) and run automatically on every `put()` (a cache miss) and on `load()` — never on `get()`, so cache-hit latency stays fast. Eviction rebuilds the FAISS index directly from its own stored vectors (`IndexFlat.reconstruct_n`) rather than re-embedding surviving queries, so pruning never needs to call the embedding model.
+
+| Setting | Default | Description |
+|---|---|---|
+| `CACHE_TTL_SECONDS` | `0` (disabled) | Entries older than this many seconds are pruned. |
+| `CACHE_MAX_SIZE` | `0` (disabled) | Cache is capped at this many entries; oldest-by-last-use evicted past it. |
+
+Set these in `.env`, or pass `ttl_seconds=`/`max_size=` directly to `SemanticCache(...)`. `cache.prune_expired()` and `cache.enforce_capacity()` are also public methods you can call manually — the Streamlit dashboard's sidebar has **⏳ TTL Expiry** / **📌 LRU Capacity Cap** toggles and a **🧹 Prune Now** button that call them on demand. Unit tests live alongside the rest of the cache engine's tests in `tests/test_cache.py`.
+
+---
+
 ## 🛠️ Tech Stack
 
 - **Python 3.12** — Core application development

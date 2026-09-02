@@ -75,6 +75,21 @@ HYBRID_TOP_K: int = int(os.getenv("HYBRID_TOP_K", "10"))
 # BM25, not pure cosine similarity).
 HYBRID_SIMILARITY_THRESHOLD: float = float(os.getenv("HYBRID_SIMILARITY_THRESHOLD", "0.55"))
 
+# ── Cache Eviction (TTL + LRU) ─────────────────────────────────────────────────
+# Time-to-live pruning: entries older than this many seconds — measured from
+# `cached_at`, i.e. absolute expiry from insertion time, not from last use —
+# are evicted automatically. 0 disables TTL pruning (entries never expire on
+# their own), which is the default so an existing cache keeps growing exactly
+# as it did before this feature existed, unless a TTL is set.
+CACHE_TTL_SECONDS: int = int(os.getenv("CACHE_TTL_SECONDS", "0"))
+
+# LRU capacity pruning: once the cache holds more than this many entries, the
+# least-recently-accessed ones are evicted until it fits again. "Recently
+# accessed" is tracked per entry as `last_accessed_at`, updated in memory on
+# every cache HIT (not persisted until the next write, to keep hits fast).
+# 0 disables the cap (unbounded growth) — the default.
+CACHE_MAX_SIZE: int = int(os.getenv("CACHE_MAX_SIZE", "0"))
+
 # ── OpenAI / LLM ────────────────────────────────────────────────────────────
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")

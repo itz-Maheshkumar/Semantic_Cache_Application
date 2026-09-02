@@ -19,6 +19,8 @@ from src.config import (
     BM25_WEIGHT,
     HYBRID_TOP_K,
     HYBRID_SIMILARITY_THRESHOLD,
+    CACHE_TTL_SECONDS,
+    CACHE_MAX_SIZE,
 )
 from src.embedder import Embedder
 from src.hybrid_search import blend
@@ -35,6 +37,10 @@ class SemanticCache:
     Optionally runs in hybrid mode, where lookups blend FAISS vector
     similarity with BM25 keyword scoring (src/bm25_index.py, src/hybrid_search.py)
     over the same query corpus, instead of relying on vector similarity alone.
+
+    Also optionally prunes itself: a TTL evicts entries past a maximum age,
+    and an LRU cap evicts the least-recently-accessed entries once the cache
+    grows past a maximum size. Both are off (unbounded growth) by default.
     """
 
     def __init__(
@@ -49,6 +55,8 @@ class SemanticCache:
         bm25_weight: float = BM25_WEIGHT,
         hybrid_top_k: int = HYBRID_TOP_K,
         hybrid_threshold: float = HYBRID_SIMILARITY_THRESHOLD,
+        ttl_seconds: int = CACHE_TTL_SECONDS,
+        max_size: int = CACHE_MAX_SIZE,
     ):
         """
         Initialize the SemanticCache engine.
@@ -68,6 +76,10 @@ class SemanticCache:
                 candidate pool before ranking.
             hybrid_threshold: Minimum blended hybrid score (0.0 - 1.0) to consider a cache
                 hit when hybrid_enabled is True.
+            ttl_seconds: Entries older than this (by `cached_at`) are pruned automatically.
+                0 disables TTL pruning.
+            max_size: Maximum number of entries to retain; once exceeded, the
+                least-recently-accessed entries are evicted. 0 disables the cap.
         """
         self.embedder = embedder if embedder is not None else Embedder()
         self.threshold = threshold
@@ -79,6 +91,9 @@ class SemanticCache:
         self.bm25_weight = bm25_weight
         self.hybrid_top_k = hybrid_top_k
         self.hybrid_threshold = hybrid_threshold
+
+        self.ttl_seconds = ttl_seconds
+        self.max_size = max_size
 
         self.dimension = self.embedder.embedding_dim
         # IndexFlatIP (Inner Product) measures dot product. With L2-normalized vectors, dot product equals cosine similarity.
@@ -126,6 +141,7 @@ class SemanticCache:
         # Check if top score meets or exceeds similarity threshold
         if best_idx >= 0 and best_idx < len(self.metadata) and best_score >= self.threshold:
             matched_entry = self.metadata[best_idx]
+            self._touch(matched_entry)
             log.info(
                 f"Cache HIT [score: {best_score:.4f}] for query: '{query}' -> matched: '{matched_entry['query']}'"
             )
@@ -174,6 +190,7 @@ class SemanticCache:
 
         if 0 <= best.index < len(self.metadata) and best.hybrid_score >= self.hybrid_threshold:
             matched_entry = self.metadata[best.index]
+            self._touch(matched_entry)
             log.info(
                 f"Cache HIT [hybrid: {best.hybrid_score:.4f}, vector: {best.vector_score:.4f}, "
                 f"bm25: {best.bm25_score:.4f}] for query: '{query}' -> matched: '{matched_entry['query']}'"
@@ -206,17 +223,29 @@ class SemanticCache:
         # Add vector to FAISS index
         self.index.add(query_matrix)
 
-        # Add corresponding entry to metadata list
+        # Add corresponding entry to metadata list. `last_accessed_at` starts
+        # equal to `cached_at` — a freshly inserted entry is, by definition,
+        # the most recently used one.
         now_iso = datetime.now(timezone.utc).isoformat()
         entry = {
             "query": query,
             "response": response,
             "cached_at": now_iso,
+            "last_accessed_at": now_iso,
         }
         self.metadata.append(entry)
-        self._rebuild_bm25()
 
         log.info(f"Added query-response pair to cache (total entries: {self.size}).")
+
+        # Eviction runs on every write (not on every get(), which needs to stay
+        # fast): each call below rebuilds the BM25 index itself if it evicts
+        # anything, so only rebuild it here when neither one did.
+        expired = self.prune_expired()
+        evicted = self.enforce_capacity()
+        if expired or evicted:
+            log.info(f"Eviction on put(): {expired} expired (TTL), {evicted} evicted (LRU capacity).")
+        else:
+            self._rebuild_bm25()
 
         if auto_save:
             self.save()
@@ -270,7 +299,21 @@ class SemanticCache:
 
             self.index = loaded_index
             self.metadata = loaded_metadata
+            # Metadata saved before eviction support existed won't have
+            # `last_accessed_at` — backfill it from `cached_at` so LRU has
+            # something to sort by.
+            for entry in self.metadata:
+                entry.setdefault("last_accessed_at", entry["cached_at"])
             self._rebuild_bm25()
+
+            expired = self.prune_expired()
+            evicted = self.enforce_capacity()
+            if expired or evicted:
+                log.info(
+                    f"Eviction on load(): {expired} expired (TTL), {evicted} evicted (LRU capacity)."
+                )
+                self.save()
+
             log.info(f"Cache loaded successfully from disk ({self.size} entries).")
             return True
         except Exception as e:
@@ -300,6 +343,93 @@ class SemanticCache:
     def _rebuild_bm25(self) -> None:
         """Rebuild the BM25 keyword index from the current metadata's queries."""
         self.bm25_index.rebuild([entry["query"] for entry in self.metadata])
+
+    def _touch(self, entry: Dict[str, Any]) -> None:
+        """
+        Mark a metadata entry as just-accessed, for LRU eviction.
+
+        Updates the entry in memory only — not persisted to disk until the
+        next put()/save(), so a burst of cache hits doesn't cost any disk
+        I/O and hit latency stays fast. Eviction decisions only ever run at
+        write time (see put(), load()), by which point this is up to date.
+        """
+        entry["last_accessed_at"] = datetime.now(timezone.utc).isoformat()
+
+    def prune_expired(self) -> int:
+        """
+        Evict all entries older than `ttl_seconds` (measured from `cached_at`).
+
+        A no-op (returns 0 immediately, without touching the index) when TTL
+        pruning is disabled (ttl_seconds <= 0) or the cache is empty.
+
+        Returns:
+            Number of entries evicted.
+        """
+        if self.ttl_seconds <= 0 or self.is_empty:
+            return 0
+
+        now = datetime.now(timezone.utc)
+        keep_indices = [
+            i for i, entry in enumerate(self.metadata)
+            if (now - datetime.fromisoformat(entry["cached_at"])).total_seconds() <= self.ttl_seconds
+        ]
+
+        removed = self.size - len(keep_indices)
+        if removed:
+            log.info(f"TTL pruning evicted {removed} entr{'y' if removed == 1 else 'ies'} (> {self.ttl_seconds}s old).")
+            self._rebuild_from_indices(keep_indices)
+        return removed
+
+    def enforce_capacity(self) -> int:
+        """
+        If the cache holds more than `max_size` entries, evict the
+        least-recently-accessed ones (by `last_accessed_at`) until it fits.
+
+        A no-op (returns 0 immediately, without touching the index) when the
+        capacity cap is disabled (max_size <= 0) or the cache is already
+        within it.
+
+        Returns:
+            Number of entries evicted.
+        """
+        if self.max_size <= 0 or self.size <= self.max_size:
+            return 0
+
+        # Oldest (least-recently-used) access time first.
+        order_by_recency = sorted(
+            range(len(self.metadata)),
+            key=lambda i: self.metadata[i]["last_accessed_at"],
+        )
+        num_to_evict = self.size - self.max_size
+        evict_set = set(order_by_recency[:num_to_evict])
+        keep_indices = [i for i in range(len(self.metadata)) if i not in evict_set]
+
+        log.info(f"LRU eviction removed {num_to_evict} least-recently-used entr{'y' if num_to_evict == 1 else 'ies'} (max_size={self.max_size}).")
+        self._rebuild_from_indices(keep_indices)
+        return num_to_evict
+
+    def _rebuild_from_indices(self, keep_indices: List[int]) -> None:
+        """
+        Rebuild the FAISS index, metadata list, and BM25 index to contain
+        only the entries at `keep_indices` (in the given order).
+
+        Vectors are reconstructed directly from the existing FAISS index
+        (IndexFlat stores them exactly) rather than re-embedding the surviving
+        queries' text, so eviction never needs to call the embedding model.
+        """
+        if keep_indices:
+            all_vectors = self.index.reconstruct_n(0, self.index.ntotal)
+            surviving_vectors = all_vectors[keep_indices]
+        else:
+            surviving_vectors = np.empty((0, self.dimension), dtype=np.float32)
+
+        new_index = faiss.IndexFlatIP(self.dimension)
+        if len(surviving_vectors):
+            new_index.add(surviving_vectors)
+
+        self.index = new_index
+        self.metadata = [self.metadata[i] for i in keep_indices]
+        self._rebuild_bm25()
 
     @property
     def size(self) -> int:
