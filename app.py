@@ -17,6 +17,8 @@ from src.config import (
     VECTOR_WEIGHT,
     BM25_WEIGHT,
     HYBRID_SIMILARITY_THRESHOLD,
+    CACHE_TTL_SECONDS,
+    CACHE_MAX_SIZE,
 )
 from src.embedder import Embedder
 from src.llm import LLMClient
@@ -164,6 +166,48 @@ with st.sidebar:
         cache.threshold = similarity_threshold
 
     st.write(f"**Cached Entries:** `{cache.size}`")
+
+    st.markdown("---")
+    st.subheader("Eviction Policy")
+
+    ttl_enabled = st.toggle(
+        "⏳ TTL Expiry",
+        value=CACHE_TTL_SECONDS > 0,
+        help="Automatically evict entries older than a fixed age.",
+    )
+    ttl_hours = 0.0
+    if ttl_enabled:
+        ttl_hours = st.slider(
+            "TTL (hours)",
+            min_value=0.5,
+            max_value=24 * 30,  # up to 30 days
+            value=max(float(CACHE_TTL_SECONDS) / 3600.0, 1.0),
+            step=0.5,
+            help="Entries older than this (since they were cached) are pruned automatically.",
+        )
+
+    lru_enabled = st.toggle(
+        "📌 LRU Capacity Cap",
+        value=CACHE_MAX_SIZE > 0,
+        help="Cap the cache at a maximum number of entries, evicting the "
+        "least-recently-used ones once it's full.",
+    )
+    max_size = 0
+    if lru_enabled:
+        max_size = st.number_input(
+            "Max Entries", min_value=1, max_value=1_000_000,
+            value=CACHE_MAX_SIZE if CACHE_MAX_SIZE > 0 else 500, step=10,
+        )
+
+    cache.ttl_seconds = int(ttl_hours * 3600) if ttl_enabled else 0
+    cache.max_size = int(max_size) if lru_enabled else 0
+
+    if st.button("🧹 Prune Now", help="Run TTL and LRU eviction immediately, without waiting for the next query."):
+        expired = cache.prune_expired()
+        evicted = cache.enforce_capacity()
+        cache.save()
+        st.toast(f"Pruned {expired} expired + {evicted} LRU-evicted entries.", icon="🧹")
+        st.rerun()
 
     st.markdown("---")
     st.subheader("Management")
@@ -364,6 +408,13 @@ with tab3:
 with tab4:
     st.subheader("Stored Vector Cache Index")
     st.caption("Inspect all query-response pairs currently indexed in FAISS.")
+
+    policy_bits = []
+    if cache.ttl_seconds > 0:
+        policy_bits.append(f"TTL {cache.ttl_seconds / 3600:.1f}h")
+    if cache.max_size > 0:
+        policy_bits.append(f"Max {cache.max_size} entries")
+    st.caption(f"Eviction policy: {' · '.join(policy_bits) if policy_bits else 'None (unbounded growth)'}")
 
     if cache.is_empty:
         st.info("The cache is currently empty.")
