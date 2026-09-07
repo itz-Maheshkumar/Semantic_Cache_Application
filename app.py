@@ -9,6 +9,7 @@ import time
 import pandas as pd
 import streamlit as st
 
+from src.audio_transcriber import AudioTranscriber
 from src.cache import SemanticCache
 from src.config import (
     EMBEDDING_MODEL,
@@ -19,9 +20,12 @@ from src.config import (
     HYBRID_SIMILARITY_THRESHOLD,
     CACHE_TTL_SECONDS,
     CACHE_MAX_SIZE,
+    IMAGE_EMBEDDING_MODEL,
 )
 from src.embedder import Embedder
+from src.image_embedder import ImageEmbedder
 from src.llm import LLMClient
+from src.modality import Modality
 from src.pipeline import CachePipeline
 from src.request_logger import RequestLogger
 
@@ -106,6 +110,27 @@ def get_components(threshold: float):
     request_logger = RequestLogger()
     pipeline = CachePipeline(cache=cache, llm_client=llm_client, request_logger=request_logger)
     return cache, request_logger, pipeline
+
+
+@st.cache_resource
+def get_image_cache() -> SemanticCache:
+    """
+    Lazily load the CLIP image embedder and build an IMAGE-modality
+    SemanticCache. This downloads a separate (often large) model on first
+    use, so it's deliberately NOT built alongside get_components() above —
+    only the Multi-Modal Playground tab triggers it, and only once (cached
+    per Streamlit process) after that.
+    """
+    image_embedder = ImageEmbedder(model_name=IMAGE_EMBEDDING_MODEL)
+    return SemanticCache(embedder=image_embedder, modality=Modality.IMAGE)
+
+
+@st.cache_resource
+def get_audio_transcriber() -> AudioTranscriber:
+    """Lazily build the audio transcriber. Cheap to construct (its OpenAI
+    client is itself lazy — see AudioTranscriber.client) but kept behind the
+    same on-demand pattern as get_image_cache() for consistency."""
+    return AudioTranscriber()
 
 
 # ── Sidebar Controls ──────────────────────────────────────────────────────────
@@ -272,11 +297,12 @@ with kpi5:
 st.markdown("---")
 
 # ── Navigation Tabs ───────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🧪 Live Query Playground",
     "📊 Performance Analytics",
     "📜 Request Logs",
     "🗄️ Cache Inspector",
+    "🖼️🎤 Multi-Modal Playground",
 ])
 
 # ── TAB 1: Live Query Playground ──────────────────────────────────────────────
@@ -423,3 +449,114 @@ with tab4:
         cache_df = pd.DataFrame(cache.metadata)
         cache_df.insert(0, "Index ID", range(len(cache_df)))
         st.dataframe(cache_df, use_container_width=True, hide_index=True)
+
+# ── TAB 5: Multi-Modal Playground (Image + Audio) ─────────────────────────────
+with tab5:
+    st.subheader("Image & Audio Queries")
+    st.caption(
+        "Image queries are cached by CLIP vector similarity in a separate index "
+        "from the text cache above. Audio queries are transcribed to text and "
+        "then run through that same text cache — see README for details."
+    )
+
+    img_col, audio_col = st.columns(2)
+
+    # -- Image query ------------------------------------------------------------
+    with img_col:
+        st.markdown("#### 🖼️ Image Query")
+        uploaded_image = st.file_uploader(
+            "Upload an image", type=["png", "jpg", "jpeg", "webp"], key="image_uploader"
+        )
+        image_prompt = st.text_input(
+            "Prompt (optional):", placeholder="What's in this image?", key="image_prompt"
+        )
+        mock_vision_mode = st.checkbox(
+            "Use Mock Vision LLM (Simulated response without API key)",
+            value=True,
+            key="mock_vision_mode",
+            help="Uncheck if you have set your OPENAI_API_KEY in .env.",
+        )
+
+        if st.button("🔍 Submit Image Query", type="primary"):
+            if uploaded_image is None:
+                st.warning("Upload an image first.")
+            else:
+                # The CLIP model is only loaded here, on first actual use —
+                # if it fails (e.g. no network to download it), the rest of
+                # the dashboard should keep working.
+                try:
+                    image_cache = get_image_cache()
+                except Exception as e:
+                    st.error(f"Couldn't load the image embedding model: {e}")
+                    image_cache = None
+
+                if image_cache is not None:
+                    pipeline.image_cache = image_cache
+                    if mock_vision_mode:
+                        pipeline.llm_client.generate_vision = lambda image, query=None, system_prompt=None: (
+                            "This is a simulated description of the uploaded image."
+                        )
+
+                    with st.spinner("Processing image through multi-modal pipeline..."):
+                        try:
+                            result = pipeline.process_image_query(
+                                uploaded_image.getvalue(),
+                                prompt=image_prompt.strip() or None,
+                                image_label=uploaded_image.name,
+                            )
+                        except Exception as e:
+                            st.error(f"Image query failed: {e}")
+                        else:
+                            st.image(uploaded_image, width=200)
+                            if result["is_hit"]:
+                                st.markdown('<div class="badge-hit">✅ CACHE HIT</div>', unsafe_allow_html=True)
+                            else:
+                                st.markdown('<div class="badge-miss">❌ CACHE MISS</div>', unsafe_allow_html=True)
+                            st.write(f"**Latency:** `{result['latency_ms']:.2f} ms`")
+                            if result["is_hit"]:
+                                st.write(f"**Similarity Score:** `{result['similarity_score']:.4f}`")
+                            st.info(result["response"])
+
+    # -- Audio query --------------------------------------------------------------
+    with audio_col:
+        st.markdown("#### 🎤 Audio Query")
+        uploaded_audio = st.file_uploader(
+            "Upload an audio file", type=["mp3", "wav", "m4a", "webm"], key="audio_uploader"
+        )
+        mock_audio_mode = st.checkbox(
+            "Use Mock Transcription + LLM (Simulated response without API key)",
+            value=True,
+            key="mock_audio_mode",
+            help="Uncheck if you have set your OPENAI_API_KEY in .env.",
+        )
+
+        if st.button("🎙️ Submit Audio Query", type="primary"):
+            if uploaded_audio is None:
+                st.warning("Upload an audio file first.")
+            else:
+                audio_transcriber = get_audio_transcriber()
+                pipeline.audio_transcriber = audio_transcriber
+                if mock_audio_mode:
+                    # Bypass both the real Whisper call and the real chat
+                    # completion — neither needs a live API key this way.
+                    pipeline.audio_transcriber.transcribe = (
+                        lambda audio: "This is a simulated transcription of the uploaded audio."
+                    )
+                    pipeline.llm_client.generate = lambda q, system_prompt=None: (
+                        f"This is a generated response for your query: '{q}'."
+                    )
+
+                st.audio(uploaded_audio)
+                with st.spinner("Transcribing and processing audio through pipeline..."):
+                    try:
+                        result = pipeline.process_audio_query(uploaded_audio.getvalue())
+                    except Exception as e:
+                        st.error(f"Audio query failed: {e}")
+                    else:
+                        if result["is_hit"]:
+                            st.markdown('<div class="badge-hit">✅ CACHE HIT</div>', unsafe_allow_html=True)
+                        else:
+                            st.markdown('<div class="badge-miss">❌ CACHE MISS</div>', unsafe_allow_html=True)
+                        st.write(f"**Latency:** `{result['latency_ms']:.2f} ms`")
+                        st.write(f"**Transcript:** *\"{result['transcript']}\"*")
+                        st.info(result["response"])

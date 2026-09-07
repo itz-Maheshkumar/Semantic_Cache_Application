@@ -75,6 +75,28 @@ HYBRID_TOP_K: int = int(os.getenv("HYBRID_TOP_K", "10"))
 # BM25, not pure cosine similarity).
 HYBRID_SIMILARITY_THRESHOLD: float = float(os.getenv("HYBRID_SIMILARITY_THRESHOLD", "0.55"))
 
+# ── Multi-Modal Caching (Image + Audio) ───────────────────────────────────────
+# CLIP model used to embed IMAGE queries (src/image_embedder.py). A separate
+# model from EMBEDDING_MODEL — CLIP's image tower produces a different vector
+# space and dimension (512 for clip-ViT-B-32 vs. 384 for all-MiniLM-L6-v2),
+# so image queries always get their own SemanticCache instance/index, never
+# mixed into the text one.
+IMAGE_EMBEDDING_MODEL: str = os.getenv("IMAGE_EMBEDDING_MODEL", "clip-ViT-B-32")
+
+# Paths for the image cache's persisted FAISS index and metadata sidecar —
+# deliberately separate files from FAISS_INDEX_PATH/CACHE_METADATA_PATH above.
+IMAGE_FAISS_INDEX_PATH: Path = DATA_DIR / os.getenv(
+    "IMAGE_FAISS_INDEX_FILE", "image_cache.faiss"
+)
+IMAGE_CACHE_METADATA_PATH: Path = DATA_DIR / os.getenv(
+    "IMAGE_CACHE_METADATA_FILE", "image_cache_metadata.json"
+)
+
+# OpenAI Whisper model used to transcribe AUDIO queries to text
+# (src/audio_transcriber.py) before they're cached exactly like a TEXT query —
+# see src/modality.py for why audio doesn't get its own vector space.
+AUDIO_TRANSCRIPTION_MODEL: str = os.getenv("AUDIO_TRANSCRIPTION_MODEL", "whisper-1")
+
 # ── Cache Eviction (TTL + LRU) ─────────────────────────────────────────────────
 # Time-to-live pruning: entries older than this many seconds — measured from
 # `cached_at`, i.e. absolute expiry from insertion time, not from last use —
