@@ -44,6 +44,14 @@ class CacheResult:
 class RequestLog:
     """
     Represents a single recorded query request through the pipeline.
+
+    `modality` labels what kind of query produced this entry — "text",
+    "image", or "audio" — for dashboard/analytics purposes only. An audio
+    query is transcribed to text and then cached/looked-up exactly like a
+    text query (see CachePipeline.process_audio_query), so "audio" appears
+    only here, never as a SemanticCache modality (src/modality.py). Defaults
+    to None so existing callers/rows that predate multi-modal support are
+    unaffected; the pipeline always sets it explicitly on new entries.
     """
     query: str
     response: str
@@ -54,6 +62,7 @@ class RequestLog:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     matched_query: Optional[str] = None
+    modality: Optional[str] = None
 
     def to_dict(self) -> dict:
         """Convert log entry to a standard dictionary."""
@@ -65,4 +74,5 @@ class RequestLog:
             "latency_ms": self.latency_ms,
             "timestamp": self.timestamp,
             "matched_query": self.matched_query,
+            "modality": self.modality,
         }

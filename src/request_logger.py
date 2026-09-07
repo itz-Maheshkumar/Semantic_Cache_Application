@@ -37,7 +37,9 @@ class RequestLogger:
         return conn
 
     def _init_db(self) -> None:
-        """Create the request_logs table if it does not exist."""
+        """Create the request_logs table if it does not exist, and migrate
+        older on-disk databases (created before multi-modal support existed)
+        forward in place."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -49,9 +51,20 @@ class RequestLogger:
                     similarity_score REAL NOT NULL,
                     latency_ms REAL NOT NULL,
                     timestamp TEXT NOT NULL,
-                    matched_query TEXT
+                    matched_query TEXT,
+                    modality TEXT
                 )
             """)
+            # A pre-existing DB file from before this column existed hits the
+            # CREATE TABLE IF NOT EXISTS above as a no-op, so check for the
+            # column directly and backfill it. SQLite has no
+            # "ADD COLUMN IF NOT EXISTS", so PRAGMA table_info is how you
+            # check first; ALTER TABLE ADD COLUMN with a NULL-default is safe
+            # to run on a populated table (existing rows get NULL modality).
+            existing_columns = {row[1] for row in cursor.execute("PRAGMA table_info(request_logs)")}
+            if "modality" not in existing_columns:
+                cursor.execute("ALTER TABLE request_logs ADD COLUMN modality TEXT")
+                log.info("Migrated request_logs table: added 'modality' column.")
             conn.commit()
         log.debug(f"RequestLogger initialized with DB at '{self.db_path}'.")
 
@@ -68,8 +81,9 @@ class RequestLogger:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO request_logs (query, response, is_hit, similarity_score, latency_ms, timestamp, matched_query)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO request_logs
+                    (query, response, is_hit, similarity_score, latency_ms, timestamp, matched_query, modality)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 entry.query,
                 entry.response,
@@ -77,7 +91,8 @@ class RequestLogger:
                 float(entry.similarity_score),
                 float(entry.latency_ms),
                 entry.timestamp,
-                entry.matched_query
+                entry.matched_query,
+                entry.modality
             ))
             conn.commit()
             inserted_id = cursor.lastrowid
@@ -94,7 +109,10 @@ class RequestLogger:
         Returns:
             List of RequestLog instances.
         """
-        query = "SELECT query, response, is_hit, similarity_score, latency_ms, timestamp, matched_query FROM request_logs ORDER BY id DESC"
+        query = (
+            "SELECT query, response, is_hit, similarity_score, latency_ms, timestamp, "
+            "matched_query, modality FROM request_logs ORDER BY id DESC"
+        )
         if limit and limit > 0:
             query += f" LIMIT {int(limit)}"
 
@@ -110,7 +128,11 @@ class RequestLogger:
                     similarity_score=float(row["similarity_score"]),
                     latency_ms=float(row["latency_ms"]),
                     timestamp=row["timestamp"],
-                    matched_query=row["matched_query"]
+                    matched_query=row["matched_query"],
+                    # NULL for rows written before the "modality" column
+                    # existed — row["modality"] already comes back as None
+                    # for those via sqlite3.Row, so no extra handling needed.
+                    modality=row["modality"]
                 ))
         return logs
 

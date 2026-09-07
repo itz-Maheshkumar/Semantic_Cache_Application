@@ -127,15 +127,60 @@ Set these in `.env`, or pass `ttl_seconds=`/`max_size=` directly to `SemanticCac
 
 ---
 
+## 🖼️🎤 Multi-Modal Caching (Image + Audio)
+
+Caching isn't limited to typed text queries. Images get their own CLIP-based vector cache; audio is transcribed to text and reuses the existing text cache unchanged — two spoken queries that say the same thing become the same cache lookup problem this project already solves.
+
+```
+  IMAGE query                                    AUDIO query
+       │                                              │
+       ▼                                              ▼
+┌─────────────────┐                        ┌───────────────────────┐
+│  CLIP Embedder   │                        │  Whisper Transcriber  │
+│(image_embedder.py)│                       │ (audio_transcriber.py)│
+└────────┬─────────┘                        └───────────┬───────────┘
+         │ Vector (512-d)                                │ Transcript (text)
+         ▼                                                ▼
+┌─────────────────┐                        ┌───────────────────────┐
+│  IMAGE Cache     │                        │     TEXT Cache        │
+│ (separate FAISS  │                        │  (same cache/index as │
+│  index, vector-  │                        │   ordinary typed      │
+│  only, no BM25)  │                        │   queries — see above)│
+└────────┬─────────┘                        └───────────┬───────────┘
+         │ MISS                                          │ MISS
+         ▼                                                ▼
+┌─────────────────┐                        ┌───────────────────────┐
+│ generate_vision()│                        │      generate()       │
+│  (vision LLM)    │                        │       (text LLM)      │
+└──────────────────┘                        └────────────────────────┘
+```
+
+- **Image queries** (`SemanticCache(modality=Modality.IMAGE)`, `src/image_embedder.py`) are embedded with a CLIP model (`clip-ViT-B-32` by default) into their own 512-dimensional vector space and FAISS index — kept entirely separate from the 384-dimensional text index, since the two embedding spaces aren't comparable. Hybrid/BM25 search is keyword search over text and has no meaning for an image, so it's **always forced off** for an image cache, regardless of `ENABLE_HYBRID_SEARCH`. TTL/LRU eviction, save/load, and everything else in `SemanticCache` work identically across modalities, since that machinery only ever deals in vectors and timestamps, not the original query type.
+- Because a raw image (bytes/`PIL.Image`) can't be stored in metadata's string-typed `query` field or displayed/logged directly, each image entry gets a short **label** — either one you supply (`query_label=`, e.g. an uploaded filename) or an auto-generated one derived from the image's content hash (`image:<12-hex-digest>`), so identical images always get the same label.
+- On a MISS, `CachePipeline.process_image_query()` calls `LLMClient.generate_vision()` (`src/llm.py`) — a vision-capable OpenAI chat completion (`gpt-4o-mini` supports image input out of the box). A local file, raw bytes, or `PIL.Image` is base64-encoded into a `data:` URL; a plain `http(s)` URL is passed straight through.
+- **Audio queries** are never embedded or cached directly. `CachePipeline.process_audio_query()` first transcribes the audio via `AudioTranscriber.transcribe()` (`src/audio_transcriber.py`, OpenAI Whisper), then runs the resulting transcript through the exact same text pipeline as a typed query — cache lookup, LLM fallback, caching, logging, all unchanged. "Audio" is recorded only as a `modality="audio"` label on the resulting request log, for dashboard/analytics purposes; the underlying cache entry is indistinguishable from one created by a typed query.
+- Every request log (`RequestLog`, `src/models.py`) carries a `modality` field (`"text"` / `"image"` / `"audio"`) so dashboard/analytics views can tell the three apart. The SQLite table migrates itself (`ALTER TABLE ... ADD COLUMN`) the first time `RequestLogger` opens an older database file that predates this column — existing rows come back with `modality=None`, nothing is lost.
+
+| Setting | Default | Description |
+|---|---|---|
+| `IMAGE_EMBEDDING_MODEL` | `clip-ViT-B-32` | CLIP model used to embed image queries. |
+| `IMAGE_FAISS_INDEX_FILE` / `IMAGE_CACHE_METADATA_FILE` | `image_cache.faiss` / `image_cache_metadata.json` | Persisted files for the image cache (stored in `data/`, separate from the text cache's files). |
+| `AUDIO_TRANSCRIPTION_MODEL` | `whisper-1` | OpenAI Whisper model used to transcribe audio queries. |
+
+Both features are entirely additive: a `CachePipeline` built without `image_cache=`/`audio_transcriber=` (the default) behaves exactly as it did before this feature existed — `process_image_query()`/`process_audio_query()` simply raise a clear `RuntimeError` if called without the relevant dependency configured. The Streamlit dashboard's **🖼️🎤 Multi-Modal Playground** tab has image/audio uploaders (with a "mock" mode so it works without a real `OPENAI_API_KEY`) and lazily loads the CLIP model only on first use, so it never slows down or breaks the rest of the dashboard if the model can't be downloaded. Unit tests live alongside the rest of the cache/pipeline test suites in `tests/test_cache.py` and `tests/test_pipeline.py`.
+
+---
+
 ## 🛠️ Tech Stack
 
 - **Python 3.12** — Core application development
-- **Sentence Transformers** — Semantic vector embedding generation (`all-MiniLM-L6-v2`)
+- **Sentence Transformers** — Semantic vector embedding generation (`all-MiniLM-L6-v2` for text, `clip-ViT-B-32` for images)
 - **FAISS (CPU)** — High-performance vector similarity search
 - **rank_bm25** — BM25 keyword search, blended with vector similarity for hybrid retrieval
+- **Pillow** — Image loading/decoding for multi-modal (image) caching
 - **SQLite** — Persistent request logging and metric storage
 - **Streamlit** — Real-time analytics dashboard & query playground
-- **OpenAI API** — LLM response generation on cache miss
+- **OpenAI API** — LLM response generation on cache miss, plus vision (image) and Whisper (audio transcription) for multi-modal queries
 - **pytest & flake8** — Automated test suite and code quality linting
 
 ---
@@ -151,19 +196,22 @@ semantic-cache-project/
 │   ├── __init__.py              # Package init
 │   ├── config.py                # Configuration and environment loader
 │   ├── logger.py                # Structured logging utility
-│   ├── embedder.py              # Embedding Engine (Sentence Transformers)
+│   ├── embedder.py              # Embedding Engine (Sentence Transformers, text)
+│   ├── image_embedder.py        # Image Embedding Engine (CLIP, multi-modal caching)
+│   ├── audio_transcriber.py     # OpenAI Whisper client (multi-modal caching)
+│   ├── modality.py              # Modality enum (TEXT / IMAGE) shared across the cache
 │   ├── cache.py                 # Semantic Cache Engine (FAISS + Storage)
 │   ├── bm25_index.py            # BM25 keyword search index (hybrid search)
 │   ├── hybrid_search.py         # Vector + BM25 score fusion (hybrid search)
-│   ├── llm.py                   # OpenAI API client wrapper with retries
+│   ├── llm.py                   # OpenAI API client wrapper with retries (text + vision)
 │   ├── models.py                # Data models (CacheResult, RequestLog)
 │   ├── request_logger.py        # SQLite logging & KPI aggregator
 │   └── pipeline.py              # Main Cache Pipeline orchestrator
 ├── tests/                       # Automated unit & benchmark test suite
 │   ├── test_embedder.py
-│   ├── test_cache.py
+│   ├── test_cache.py            # incl. TTL/LRU eviction + multi-modal (IMAGE) tests
 │   ├── test_hybrid_search.py
-│   ├── test_pipeline.py
+│   ├── test_pipeline.py         # incl. multi-modal (image/audio) pipeline + LLM vision tests
 │   └── test_evaluation.py
 ├── scripts/
 │   └── evaluate.py              # Standalone CLI evaluation & benchmark script

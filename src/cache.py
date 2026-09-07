@@ -2,6 +2,7 @@
 cache.py — Semantic Cache Engine using FAISS vector search and JSON metadata persistence.
 """
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,7 @@ from src.config import (
 from src.embedder import Embedder
 from src.hybrid_search import blend
 from src.logger import get_logger
+from src.modality import Modality
 from src.models import CacheResult
 
 log = get_logger(__name__)
@@ -41,6 +43,16 @@ class SemanticCache:
     Also optionally prunes itself: a TTL evicts entries past a maximum age,
     and an LRU cap evicts the least-recently-accessed entries once the cache
     grows past a maximum size. Both are off (unbounded growth) by default.
+
+    Also supports non-text modalities (src/modality.py) for multi-modal
+    caching: pass modality=Modality.IMAGE with an ImageEmbedder
+    (src/image_embedder.py) instead of a text Embedder to cache image
+    queries by CLIP vector similarity. Hybrid/BM25 search is keyword search
+    over text and has no meaning for an image, so it is always forced off
+    for any non-TEXT modality, regardless of hybrid_enabled. Everything
+    else — eviction, save/load, dashboard display — works the same way
+    across modalities, since the FAISS/eviction machinery only ever deals
+    in vectors, not the original query type.
     """
 
     def __init__(
@@ -57,19 +69,24 @@ class SemanticCache:
         hybrid_threshold: float = HYBRID_SIMILARITY_THRESHOLD,
         ttl_seconds: int = CACHE_TTL_SECONDS,
         max_size: int = CACHE_MAX_SIZE,
+        modality: Modality = Modality.TEXT,
     ):
         """
         Initialize the SemanticCache engine.
 
         Args:
-            embedder: Optional Embedder instance. If None, creates a new Embedder instance.
+            embedder: Optional embedder instance (an Embedder for TEXT, an
+                ImageEmbedder for IMAGE — anything with .embed(x) and
+                .embedding_dim). If None, creates a new text Embedder.
             threshold: Minimum cosine similarity score (0.0 - 1.0) to consider a cache hit
-                in vector-only mode (i.e. when hybrid_enabled is False).
+                in vector-only mode (i.e. when hybrid_enabled is False, or the modality
+                isn't TEXT — hybrid is always vector-only for non-text modalities).
             index_path: Path for saving/loading the FAISS index file.
             metadata_path: Path for saving/loading the cache metadata JSON file.
             auto_load: If True, attempts to load existing index/metadata from disk if present.
             hybrid_enabled: If True, lookups blend vector similarity with BM25 keyword
-                scoring instead of using vector similarity alone.
+                scoring instead of using vector similarity alone. Ignored (forced off)
+                unless modality is TEXT.
             vector_weight: Weight given to the vector (cosine similarity) score when blending.
             bm25_weight: Weight given to the normalized BM25 (keyword) score when blending.
             hybrid_top_k: Number of top candidates each retriever contributes to the merged
@@ -80,13 +97,19 @@ class SemanticCache:
                 0 disables TTL pruning.
             max_size: Maximum number of entries to retain; once exceeded, the
                 least-recently-accessed entries are evicted. 0 disables the cap.
+            modality: What kind of query this cache indexes — Modality.TEXT (default)
+                or Modality.IMAGE. See src/modality.py.
         """
         self.embedder = embedder if embedder is not None else Embedder()
         self.threshold = threshold
         self.index_path = Path(index_path)
         self.metadata_path = Path(metadata_path)
 
-        self.hybrid_enabled = hybrid_enabled
+        self.modality = Modality(modality)
+        # BM25/hybrid search is keyword search over text; it has no meaning
+        # for a non-text modality, so it's never available for one, no
+        # matter what the caller (or a live dashboard toggle) sets it to.
+        self.hybrid_enabled = hybrid_enabled and self.modality is Modality.TEXT
         self.vector_weight = vector_weight
         self.bm25_weight = bm25_weight
         self.hybrid_top_k = hybrid_top_k
@@ -105,12 +128,19 @@ class SemanticCache:
         if auto_load:
             self.load()
 
-    def get(self, query: str) -> Optional[CacheResult]:
+    def get(self, query: Any, query_label: Optional[str] = None) -> Optional[CacheResult]:
         """
         Look up a query in the cache.
 
         Args:
-            query: Input user query string.
+            query: For a TEXT cache, the input query string. For an IMAGE
+                cache, anything the configured ImageEmbedder accepts (file
+                path, bytes, or a PIL.Image).
+            query_label: Non-text modalities only — a short human-readable
+                label for `query`, used to populate CacheResult.query (which
+                is always a string; raw image bytes aren't something you can
+                sensibly echo back or log). Defaults to an auto-generated
+                content-hash label when omitted. Ignored for TEXT.
 
         Returns:
             CacheResult if a cached query passes the similarity threshold, else None (cache miss).
@@ -119,12 +149,57 @@ class SemanticCache:
             log.debug("Cache lookup skipped — cache is empty.")
             return None
 
-        if self.hybrid_enabled:
+        # hybrid_enabled is already forced off for non-TEXT modalities at
+        # construction time; the modality check here is just defense in
+        # depth against a caller flipping it back on after the fact.
+        if self.hybrid_enabled and self.modality is Modality.TEXT:
             return self._get_hybrid(query)
-        return self._get_vector_only(query)
+        return self._get_vector_only(query, query_label)
 
-    def _get_vector_only(self, query: str) -> Optional[CacheResult]:
+    def display_query(self, query: Any, query_label: Optional[str]) -> str:
+        """
+        The string to store/echo back as a CacheResult's `query`/
+        `matched_query`, and (for a caller like CachePipeline) to log and
+        show in place of a raw, non-displayable query object.
+
+        For a TEXT cache this is just `query` itself. For a non-text cache
+        it's `query_label` if the caller supplied one, else an
+        auto-generated content-hash label (see _auto_label()) — public so
+        callers that build their own query_label (or need to know what
+        label a put()/get() call used/will use) don't have to reimplement
+        this fallback themselves.
+        """
+        if self.modality is Modality.TEXT:
+            return query
+        return query_label or self._auto_label(query)
+
+    def _auto_label(self, query: Any) -> str:
+        """
+        Derive a stable, displayable label for a non-text query that wasn't
+        given an explicit `query_label` — e.g. an image opened straight from
+        bytes with no filename to fall back on.
+
+        Raw image bytes/PIL.Image objects can't be JSON-serialized or stored
+        in metadata's string-typed `query` field, so this hashes the query's
+        content instead: two identical images always get the same label
+        (useful for logs/dedup), and the label is short enough to display.
+        """
+        if isinstance(query, (str, Path)):
+            payload = str(query).encode("utf-8")
+        elif isinstance(query, (bytes, bytearray)):
+            payload = bytes(query)
+        elif hasattr(query, "tobytes"):
+            # PIL.Image and numpy arrays both expose .tobytes()
+            payload = query.tobytes()
+        else:
+            payload = repr(query).encode("utf-8")
+        digest = hashlib.sha256(payload).hexdigest()[:12]
+        return f"{self.modality.value}:{digest}"
+
+    def _get_vector_only(self, query: Any, query_label: Optional[str] = None) -> Optional[CacheResult]:
         """Pure FAISS vector-similarity lookup (the original cache behavior)."""
+        query_display = self.display_query(query, query_label)
+
         # Generate L2-normalized embedding for input query
         query_vector = self.embedder.embed(query)
         # FAISS search expects a 2D float32 array of shape (1, dimension)
@@ -143,17 +218,17 @@ class SemanticCache:
             matched_entry = self.metadata[best_idx]
             self._touch(matched_entry)
             log.info(
-                f"Cache HIT [score: {best_score:.4f}] for query: '{query}' -> matched: '{matched_entry['query']}'"
+                f"Cache HIT [score: {best_score:.4f}] for query: '{query_display}' -> matched: '{matched_entry['query']}'"
             )
             return CacheResult(
-                query=query,
+                query=query_display,
                 response=matched_entry["response"],
                 similarity_score=best_score,
                 cached_at=matched_entry["cached_at"],
                 matched_query=matched_entry["query"],
             )
 
-        log.info(f"Cache MISS [best score: {best_score:.4f}] for query: '{query}'")
+        log.info(f"Cache MISS [best score: {best_score:.4f}] for query: '{query_display}'")
         return None
 
     def _get_hybrid(self, query: str) -> Optional[CacheResult]:
@@ -208,14 +283,28 @@ class SemanticCache:
         log.info(f"Cache MISS [best hybrid score: {best.hybrid_score:.4f}] for query: '{query}'")
         return None
 
-    def put(self, query: str, response: str, auto_save: bool = True) -> None:
+    def put(
+        self,
+        query: Any,
+        response: str,
+        auto_save: bool = True,
+        query_label: Optional[str] = None,
+    ) -> None:
         """
         Store a new query-response pair in the vector index and metadata store.
 
         Args:
-            query: Input user query string.
+            query: Input query. For a TEXT cache, a query string. For an
+                IMAGE cache, anything ImageEmbedder.embed() accepts (a file
+                path, raw bytes, or a PIL.Image) — not a string, so it can't
+                be stored verbatim in metadata/logs.
             response: Generated LLM response string.
             auto_save: If True, persists index and metadata to disk immediately.
+            query_label: Optional human-readable label to store/display in
+                place of a non-text query (e.g. an uploaded filename). Ignored
+                for TEXT caches. When omitted for a non-text query, a stable
+                label is auto-derived from the content's hash — see
+                _auto_label().
         """
         query_vector = self.embedder.embed(query)
         query_matrix = np.expand_dims(query_vector, axis=0)
@@ -228,7 +317,7 @@ class SemanticCache:
         # the most recently used one.
         now_iso = datetime.now(timezone.utc).isoformat()
         entry = {
-            "query": query,
+            "query": self.display_query(query, query_label),
             "response": response,
             "cached_at": now_iso,
             "last_accessed_at": now_iso,
@@ -341,7 +430,18 @@ class SemanticCache:
         log.info("Cache cleared.")
 
     def _rebuild_bm25(self) -> None:
-        """Rebuild the BM25 keyword index from the current metadata's queries."""
+        """
+        Rebuild the BM25 keyword index from the current metadata's queries.
+
+        A no-op for non-TEXT caches: BM25 is keyword search over query text,
+        which has no meaning for an image cache (hybrid search is always
+        forced off for those — see __init__), so there's nothing to index
+        and no reason to pay the rebuild cost. Guarding here (rather than at
+        each of this method's call sites — put(), load(), clear(),
+        _rebuild_from_indices()) keeps every call site oblivious to modality.
+        """
+        if self.modality is not Modality.TEXT:
+            return
         self.bm25_index.rebuild([entry["query"] for entry in self.metadata])
 
     def _touch(self, entry: Dict[str, Any]) -> None:
