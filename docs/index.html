@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Semantic Cache Application — Maheshkumar Venkatachalam</title>
+<meta name="description" content="Deep dive into the Semantic Cache Application — an LLM response cache that matches paraphrased text, image and audio queries with FAISS + BM25 hybrid search, TTL/LRU eviction, and multi-modal (CLIP + Whisper) caching." />
+<meta property="og:title" content="Semantic Cache Application" />
+<meta property="og:description" content="Semantic caching for LLM apps — FAISS vector search, hybrid BM25 retrieval, TTL/LRU eviction, and multi-modal (image + audio) queries, with a live Streamlit analytics dashboard." />
+<meta property="og:type" content="website" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0d1117; --bg-alt:#11161d; --terminal-bg:#0a0e14; --border:#22282f;
+  --green:#39FF14; --green-dim:#1f8f0c; --text:#c9d1d9; --text-dim:#6b7280;
+  --white:#f4f4f4; --red:#ff5f56; --yellow:#ffbd2e; --violet:#8b7cf6; --cyan:#38bdf8;
+  --mono:'JetBrains Mono','Fira Code',ui-monospace,Consolas,monospace;
+  --max-width:1080px;
+}
+*{box-sizing:border-box;}
+html{scroll-behavior:smooth;scroll-padding-top:80px;}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--mono);line-height:1.65;overflow-x:hidden;-webkit-font-smoothing:antialiased;}
+::selection{background:var(--green);color:#000;}
+img{max-width:100%;display:block;}
+a{color:var(--green);}
+
+#matrix-bg{position:fixed;inset:0;width:100%;height:100%;z-index:0;opacity:.05;pointer-events:none;}
+.scanline{position:fixed;inset:0;pointer-events:none;z-index:1;
+  background:repeating-linear-gradient(to bottom,rgba(255,255,255,.015) 0px,rgba(255,255,255,.015) 1px,transparent 1px,transparent 3px);}
+main,header,footer,nav{position:relative;z-index:2;}
+
+/* ---- progress + nav ---- */
+#progress{position:fixed;top:0;left:0;height:2px;width:0;background:var(--green);z-index:60;box-shadow:0 0 10px var(--green);transition:width .1s linear;}
+.navbar{position:fixed;top:0;left:0;right:0;z-index:50;background:rgba(13,17,23,.88);backdrop-filter:blur(8px);border-bottom:1px solid var(--border);}
+.nav-inner{max-width:var(--max-width);margin:0 auto;padding:.85rem 1.25rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;}
+.back-link{color:var(--green);text-decoration:none;font-size:.85rem;font-weight:700;white-space:nowrap;}
+.back-link:hover{text-decoration:underline;}
+.nav-links{list-style:none;display:flex;gap:1.35rem;margin:0;padding:0;}
+.nav-links a{color:var(--text);text-decoration:none;font-size:.82rem;transition:color .2s;}
+.nav-links a:hover,.nav-links a.active{color:var(--green);}
+.nav-toggle{display:none;flex-direction:column;gap:4px;background:none;border:none;cursor:pointer;padding:4px;}
+.nav-toggle span{width:22px;height:2px;background:var(--green);}
+
+/* ---- shared ---- */
+.section{max-width:var(--max-width);margin:0 auto;padding:4.5rem 1.25rem;}
+.section-title{font-size:1.4rem;color:var(--white);margin:0 0 .4rem;display:flex;align-items:baseline;gap:.5rem;}
+.section-title .tag{color:var(--green);}
+.section-sub{color:var(--text-dim);font-size:.85rem;margin:0 0 2rem;}
+.terminal-window{width:100%;background:var(--terminal-bg);border:1px solid var(--border);border-radius:10px;overflow:hidden;
+  box-shadow:0 0 40px rgba(57,255,20,.05),0 20px 40px rgba(0,0,0,.4);}
+.terminal-bar{display:flex;align-items:center;gap:8px;padding:.7rem 1rem;background:#161b22;border-bottom:1px solid var(--border);}
+.dot{width:11px;height:11px;border-radius:50%;display:inline-block;}
+.dot.red{background:var(--red);} .dot.yellow{background:var(--yellow);} .dot.green{background:#27c93f;}
+.terminal-title{margin-left:.75rem;color:var(--text-dim);font-size:.78rem;}
+.terminal-body{padding:1.5rem 1.75rem 1.85rem;font-size:.92rem;}
+.terminal-body p{margin:.55rem 0;}
+.prompt{color:var(--green);margin-right:.4rem;}
+.dim{color:var(--text-dim);}
+.hl{color:var(--green);}
+.btn{font-family:var(--mono);font-size:.85rem;padding:.6rem 1.1rem;border-radius:6px;text-decoration:none;border:1px solid var(--green);transition:all .2s;display:inline-block;}
+.btn-primary{background:var(--green);color:#000;font-weight:700;}
+.btn-primary:hover{background:transparent;color:var(--green);}
+.btn-outline{color:var(--green);background:transparent;}
+.btn-outline:hover{background:var(--green);color:#000;}
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .55s ease,transform .55s ease;}
+.reveal.in{opacity:1;transform:none;}
+
+/* ---- hero ---- */
+.hero{padding:7.5rem 1.25rem 2rem;max-width:var(--max-width);margin:0 auto;}
+.crumb{font-size:.78rem;color:var(--text-dim);margin-bottom:1rem;}
+.crumb a{color:var(--text-dim);text-decoration:none;}
+.crumb a:hover{color:var(--green);}
+.hero h1{font-size:clamp(1.7rem,4.6vw,2.5rem);margin:.3rem 0 .6rem;color:var(--white);line-height:1.2;}
+.hero-tagline{font-size:1rem;color:var(--text);margin:0 0 1.2rem;max-width:70ch;}
+.badge-row{display:flex;flex-wrap:wrap;gap:.5rem;margin:1rem 0 1.4rem;}
+.badge{border:1px solid var(--green-dim);color:var(--green);background:rgba(57,255,20,.06);padding:.32rem .75rem;border-radius:20px;font-size:.75rem;}
+.hero-links{display:flex;gap:.9rem;flex-wrap:wrap;margin-top:.4rem;}
+.stat-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin:2.5rem 0 0;}
+.stat{background:var(--bg-alt);border:1px solid var(--border);border-radius:10px;padding:1.1rem 1rem;text-align:center;}
+.stat b{display:block;font-size:1.6rem;color:var(--green);line-height:1.1;}
+.stat span{font-size:.72rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.06em;}
+
+/* ---- architecture ---- */
+.arch-wrap{background:var(--bg-alt);border:1px solid var(--border);border-radius:12px;padding:1rem;overflow-x:auto;}
+.arch-svg{width:100%;min-width:760px;height:auto;display:block;}
+.lane{fill:rgba(255,255,255,.015);stroke:var(--border);stroke-width:1;rx:10;}
+.lane-label{fill:var(--text-dim);font-size:11px;letter-spacing:.12em;font-family:var(--mono);}
+.node rect{fill:#0a0e14;stroke:#2c333c;stroke-width:1.2;rx:7;transition:stroke .2s,fill .2s;}
+.node text{fill:var(--text);font-size:11.5px;font-family:var(--mono);text-anchor:middle;pointer-events:none;}
+.node{cursor:pointer;}
+.node:hover rect,.node.sel rect{stroke:var(--green);fill:rgba(57,255,20,.07);}
+.node:hover text,.node.sel text{fill:var(--white);}
+.edge{stroke:#2f3742;stroke-width:1.2;fill:none;stroke-dasharray:5 6;animation:dash 3.5s linear infinite;}
+.edge.up{stroke:rgba(57,255,20,.35);}
+@keyframes dash{to{stroke-dashoffset:-44;}}
+.arch-detail{margin-top:1rem;border:1px dashed var(--border);border-radius:8px;padding:1rem 1.1rem;background:var(--terminal-bg);min-height:96px;}
+.arch-detail h4{margin:0 0 .35rem;color:var(--green);font-size:.92rem;}
+.arch-detail p{margin:0;font-size:.86rem;}
+.arch-detail .meta{margin-top:.5rem;font-size:.75rem;color:var(--text-dim);}
+
+/* ---- flow ---- */
+.flow-controls{display:flex;gap:.7rem;align-items:center;margin-bottom:1.2rem;flex-wrap:wrap;}
+.flow{display:grid;grid-template-columns:1fr;gap:0;border-left:1px dashed var(--border);margin-left:14px;}
+.step{position:relative;padding:.55rem 0 .55rem 2.1rem;cursor:pointer;}
+.step::before{content:attr(data-n);position:absolute;left:-14px;top:.7rem;width:28px;height:28px;border-radius:50%;
+  background:var(--bg-alt);border:1px solid var(--border);color:var(--text-dim);font-size:.75rem;
+  display:flex;align-items:center;justify-content:center;transition:all .25s;}
+.step.on::before{border-color:var(--green);color:#000;background:var(--green);box-shadow:0 0 14px rgba(57,255,20,.5);}
+.step h4{margin:.35rem 0 .1rem;font-size:.94rem;color:var(--text);transition:color .2s;}
+.step.on h4{color:var(--white);}
+.step .sd{max-height:0;overflow:hidden;transition:max-height .35s ease,opacity .3s;opacity:0;font-size:.86rem;color:var(--text-dim);}
+.step.on .sd{max-height:260px;opacity:1;padding:.35rem 0 .6rem;}
+.step code{color:var(--green);background:rgba(57,255,20,.07);padding:.1rem .35rem;border-radius:4px;font-size:.82em;}
+
+/* ---- feature grid ---- */
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:1.1rem;}
+.grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:1.2rem;}
+.grid-2>*,.grid-3>*,.gallery>*{min-width:0;}
+.card{background:var(--bg-alt);border:1px solid var(--border);border-radius:10px;padding:1.2rem 1.25rem;transition:transform .2s,border-color .2s;}
+.card:hover{transform:translateY(-4px);border-color:var(--green-dim);}
+.card .ico{font-size:1.3rem;}
+.card h3{margin:.5rem 0 .4rem;font-size:.95rem;color:var(--white);}
+.card p{margin:0;font-size:.84rem;color:var(--text-dim);}
+
+/* ---- gallery ---- */
+.filters{display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1.4rem;}
+.filter{font-family:var(--mono);font-size:.76rem;padding:.35rem .8rem;border-radius:20px;cursor:pointer;
+  background:transparent;color:var(--text-dim);border:1px solid var(--border);transition:all .2s;}
+.filter:hover{color:var(--green);border-color:var(--green-dim);}
+.filter.on{background:rgba(57,255,20,.1);border-color:var(--green);color:var(--green);}
+.gallery{display:grid;grid-template-columns:repeat(3,1fr);gap:1.1rem;}
+figure.shot{margin:0;background:var(--bg-alt);border:1px solid var(--border);border-radius:10px;overflow:hidden;cursor:zoom-in;transition:transform .2s,border-color .2s;}
+figure.shot:hover{transform:translateY(-4px);border-color:var(--green-dim);}
+figure.shot img{aspect-ratio:16/9;object-fit:cover;object-position:top center;border-bottom:1px solid var(--border);background:#06090d;}
+figure.shot figcaption{padding:.7rem .85rem .85rem;font-size:.78rem;color:var(--text-dim);}
+figure.shot figcaption b{display:block;color:var(--text);font-size:.84rem;font-weight:700;margin-bottom:.15rem;}
+figure.shot.hide{display:none;}
+
+/* ---- lightbox ---- */
+.lb{position:fixed;inset:0;background:rgba(5,7,10,.94);z-index:100;display:none;align-items:center;justify-content:center;flex-direction:column;padding:2.5rem 1.5rem;}
+.lb.open{display:flex;}
+.lb img{max-width:min(1200px,94vw);max-height:78vh;object-fit:contain;border:1px solid var(--border);border-radius:8px;}
+.lb-cap{color:var(--text);font-size:.85rem;margin-top:.9rem;text-align:center;max-width:70ch;}
+.lb-cap span{color:var(--text-dim);display:block;font-size:.78rem;margin-top:.2rem;}
+.lb-close{position:absolute;top:1.1rem;right:1.4rem;background:none;border:1px solid var(--border);color:var(--text);
+  font-family:var(--mono);font-size:.9rem;border-radius:6px;padding:.3rem .7rem;cursor:pointer;}
+.lb-close:hover{border-color:var(--green);color:var(--green);}
+.lb-nav{position:absolute;top:50%;transform:translateY(-50%);background:none;border:1px solid var(--border);color:var(--text);
+  font-family:var(--mono);font-size:1.2rem;border-radius:6px;padding:.5rem .8rem;cursor:pointer;}
+.lb-nav:hover{border-color:var(--green);color:var(--green);}
+.lb-prev{left:1.2rem;} .lb-next{right:1.2rem;}
+
+/* ---- tables ---- */
+.tbl-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:10px;background:var(--bg-alt);}
+table{border-collapse:collapse;width:100%;min-width:620px;font-size:.83rem;}
+th,td{text-align:left;padding:.75rem 1rem;border-bottom:1px solid var(--border);}
+th{color:var(--text-dim);font-weight:500;text-transform:uppercase;font-size:.71rem;letter-spacing:.07em;}
+tr:last-child td{border-bottom:none;}
+td b{color:var(--white);}
+td code{color:var(--green);font-size:.9em;}
+
+/* ---- module accordion ---- */
+.acc{border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--bg-alt);}
+.acc+.acc{margin-top:.7rem;}
+.acc-head{width:100%;display:flex;align-items:center;justify-content:space-between;gap:1rem;background:none;border:none;
+  color:var(--text);font-family:var(--mono);font-size:.88rem;padding:.95rem 1.1rem;cursor:pointer;text-align:left;}
+.acc-head:hover{color:var(--green);}
+.acc-head .n{color:var(--text-dim);font-size:.75rem;}
+.acc-body{max-height:0;overflow:hidden;transition:max-height .35s ease;}
+.acc.open .acc-body{max-height:600px;}
+.acc.open .chev{transform:rotate(90deg);}
+.chev{color:var(--green);transition:transform .25s;display:inline-block;}
+.ep{display:flex;flex-wrap:wrap;gap:.3rem .8rem;align-items:baseline;padding:.42rem 1.1rem;font-size:.8rem;border-top:1px solid var(--border);}
+.ep .p{word-break:break-all;}
+.ep .m{min-width:88px;font-weight:700;font-size:.72rem;}
+.m.core{color:#38bdf8;} .m.retr{color:#4ade80;} .m.evic{color:var(--yellow);} .m.mm{color:var(--violet);}
+.ep .p{color:var(--text);}
+.ep .d{color:var(--text-dim);margin-left:auto;text-align:right;}
+
+/* ---- code block ---- */
+.code{position:relative;background:var(--terminal-bg);border:1px solid var(--border);border-radius:8px;padding:1rem 1.1rem;overflow-x:auto;}
+.code pre{margin:0;font-size:.82rem;color:var(--text);font-family:var(--mono);}
+.code .c{color:var(--text-dim);}
+.copy{position:absolute;top:.6rem;right:.6rem;background:var(--bg-alt);border:1px solid var(--border);color:var(--text-dim);
+  font-family:var(--mono);font-size:.7rem;padding:.25rem .6rem;border-radius:5px;cursor:pointer;}
+.copy:hover{color:var(--green);border-color:var(--green-dim);}
+
+/* ---- notes ---- */
+.note{border-left:2px solid var(--green-dim);padding:.15rem 0 .15rem 1.1rem;margin-bottom:1.4rem;}
+.note h4{margin:0 0 .3rem;font-size:.9rem;color:var(--white);}
+.note p{margin:0;font-size:.85rem;color:var(--text-dim);}
+
+/* ---- footer ---- */
+.footer{text-align:center;padding:3rem 1.25rem;font-size:.85rem;border-top:1px solid var(--border);margin-top:3rem;}
+.footer p{margin:.35rem 0;}
+
+@media (max-width:900px){
+  .grid-3,.gallery{grid-template-columns:repeat(2,1fr);}
+  .stat-strip{grid-template-columns:repeat(2,1fr);}
+}
+@media (max-width:760px){
+  .ep .d{margin-left:0;width:100%;text-align:left;font-size:.72rem;}
+  .acc.open .acc-body{max-height:900px;}
+  .grid-3,.grid-2,.gallery{grid-template-columns:1fr;}
+  .nav-links{position:absolute;top:100%;left:0;right:0;background:var(--bg);border-bottom:1px solid var(--border);
+    flex-direction:column;padding:1rem 1.25rem;display:none;gap:1rem;}
+  .nav-links.open{display:flex;}
+  .nav-toggle{display:flex;}
+  .terminal-body{padding:1.2rem 1.1rem 1.4rem;}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important;}
+  .reveal{opacity:1;transform:none;}
+}
+</style>
+</head>
+<body>
+
+<canvas id="matrix-bg"></canvas>
+<div class="scanline"></div>
+<div id="progress"></div>
+
+<nav class="navbar">
+  <div class="nav-inner">
+    <a class="back-link" href="https://itz-Maheshkumar.github.io/">← back to portfolio</a>
+    <button class="nav-toggle" id="navToggle" aria-label="Toggle menu"><span></span><span></span><span></span></button>
+    <ul class="nav-links" id="navLinks">
+      <li><a href="#overview">--overview</a></li>
+      <li><a href="#architecture">--architecture</a></li>
+      <li><a href="#flow">--flow</a></li>
+      <li><a href="#screens">--screens</a></li>
+      <li><a href="#modules">--modules</a></li>
+      <li><a href="#build">--run</a></li>
+    </ul>
+  </div>
+</nav>
+
+<header class="hero">
+  <p class="crumb"><a href="https://itz-Maheshkumar.github.io/">~/portfolio</a> <span class="dim">/</span> projects <span class="dim">/</span> <span class="hl">semantic-cache-application</span></p>
+  <h1>⚡ Semantic Cache Application</h1>
+  <p class="hero-tagline">
+    A caching layer for LLM applications that recognizes when two queries mean the same thing —
+    even when the words, the modality, or both are different. Paraphrased text, near-duplicate
+    images and spoken questions all reuse a previously generated response instead of paying for
+    another API call.
+  </p>
+  <div class="badge-row">
+    <span class="badge">Python 3.12</span><span class="badge">FAISS</span><span class="badge">Sentence-Transformers</span>
+    <span class="badge">rank-bm25</span><span class="badge">CLIP</span><span class="badge">OpenAI API</span>
+    <span class="badge">SQLite</span><span class="badge">Streamlit</span><span class="badge">GitHub Actions</span>
+  </div>
+  <div class="hero-links">
+    <a class="btn btn-primary" href="https://github.com/itz-Maheshkumar/Semantic_Cache_Application" target="_blank" rel="noopener">./view_source</a>
+    <a class="btn btn-outline" href="#screens">./see_it_running</a>
+  </div>
+  <div class="stat-strip">
+    <div class="stat"><b data-count="3">0</b><span>Query modalities</span></div>
+    <div class="stat"><b data-count="2">0</b><span>Eviction policies</span></div>
+    <div class="stat"><b data-count="72">0</b><span>Automated tests</span></div>
+    <div class="stat"><b data-count="10">0</b><span>Screens shipped</span></div>
+  </div>
+</header>
+
+<main>
+
+<!-- OVERVIEW -->
+<section id="overview" class="section reveal">
+  <h2 class="section-title"><span class="tag">#</span> overview</h2>
+  <p class="section-sub">why this exists, and what it actually does</p>
+  <div class="grid-2">
+    <div class="terminal-window">
+      <div class="terminal-bar"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span><span class="terminal-title">problem.md</span></div>
+      <div class="terminal-body">
+        <p>LLM apps get asked the same question a hundred different ways — <em>"how do I reset my
+        password"</em> vs <em>"I forgot my password, how do I change it"</em>. Exact-match caching
+        never fires on the paraphrase, so every rewording pays full LLM latency and cost again.</p>
+        <p>And it's not just text anymore — the same problem shows up for near-duplicate images
+        and spoken questions that get transcribed differently every time.</p>
+      </div>
+    </div>
+    <div class="terminal-window">
+      <div class="terminal-bar"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span><span class="terminal-title">solution.md</span></div>
+      <div class="terminal-body">
+        <p>Embed the query, search a <span class="hl">FAISS</span> vector index for something
+        semantically close enough, and return the cached response in under 10ms on a hit — falling
+        back to the real LLM only on a genuine miss.</p>
+        <p>Hybrid BM25 retrieval rescues exact keyword matches vector similarity blurs, eviction
+        keeps the cache from growing forever, and the same machinery extends to CLIP-embedded
+        images and Whisper-transcribed audio.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ARCHITECTURE -->
+<section id="architecture" class="section reveal">
+  <h2 class="section-title"><span class="tag">#</span> architecture</h2>
+  <p class="section-sub">one pipeline, three input modalities — click any box to read what it does</p>
+  <div class="arch-wrap">
+    <svg class="arch-svg" viewBox="0 0 1000 700" role="img" aria-label="System architecture diagram">
+      <!-- lanes -->
+      <rect class="lane" x="40" y="40" width="920" height="115"></rect>
+      <text class="lane-label" x="56" y="62">INPUT · TEXT / IMAGE / AUDIO</text>
+      <rect class="lane" x="40" y="205" width="920" height="215"></rect>
+      <text class="lane-label" x="56" y="227">PIPELINE · EMBED → RETRIEVE → DECIDE</text>
+      <rect class="lane" x="40" y="465" width="270" height="130"></rect>
+      <text class="lane-label" x="56" y="487">VECTOR STORES</text>
+      <rect class="lane" x="340" y="465" width="620" height="130"></rect>
+      <text class="lane-label" x="356" y="487">RESOLUTION + OBSERVABILITY</text>
+
+      <!-- edges: input -> pipeline gateway -->
+      <g id="edges">
+        <path class="edge" d="M175 133 C175 190 500 190 500 245"></path>
+        <path class="edge" d="M500 133 C500 190 500 190 500 245"></path>
+        <path class="edge" d="M825 133 C825 190 500 190 500 245"></path>
+        <!-- gateway -> embed/retrieve services -->
+        <path class="edge" d="M500 297 C500 315 172 312 172 330"></path>
+        <path class="edge" d="M500 297 C500 315 395 312 395 330"></path>
+        <path class="edge" d="M500 297 C500 315 618 312 618 330"></path>
+        <path class="edge" d="M500 297 C500 315 841 312 841 330"></path>
+        <!-- text/image embedders -> vector stores -->
+        <path class="edge" d="M172 386 C172 430 175 470 175 505"></path>
+        <path class="edge" d="M395 386 C395 440 175 450 175 505"></path>
+        <!-- hybrid retriever + audio -> resolution -->
+        <path class="edge up" d="M618 386 C618 440 426 450 426 505"></path>
+        <path class="edge up" d="M618 386 C618 440 573 450 573 505"></path>
+        <path class="edge" d="M841 386 C841 440 720 455 720 505"></path>
+        <path class="edge" d="M618 386 C618 440 720 450 720 505"></path>
+        <path class="edge" d="M618 386 C618 440 867 450 867 505"></path>
+      </g>
+
+      <!-- input nodes -->
+      <g class="node" data-k="textq"><rect x="95" y="81" width="160" height="52"></rect><text x="175" y="105">Text Query</text><text x="175" y="120">Playground</text></g>
+      <g class="node" data-k="imgq"><rect x="420" y="81" width="160" height="52"></rect><text x="500" y="105">Image Upload</text><text x="500" y="120">Multi-Modal Tab</text></g>
+      <g class="node" data-k="audq"><rect x="745" y="81" width="160" height="52"></rect><text x="825" y="105">Audio Upload</text><text x="825" y="120">Multi-Modal Tab</text></g>
+
+      <!-- gateway -->
+      <g class="node" data-k="gateway"><rect x="340" y="245" width="320" height="52"></rect><text x="500" y="269">CachePipeline</text><text x="500" y="284">process_query / _image_query / _audio_query</text></g>
+
+      <!-- embed/retrieve services -->
+      <g class="node" data-k="embedder"><rect x="70" y="330" width="205" height="56"></rect><text x="172" y="354">Text Embedder</text><text x="172" y="370">all-MiniLM-L6-v2</text></g>
+      <g class="node" data-k="imgembed"><rect x="293" y="330" width="205" height="56"></rect><text x="395" y="354">Image Embedder</text><text x="395" y="370">CLIP ViT-B/32</text></g>
+      <g class="node" data-k="hybrid"><rect x="516" y="330" width="205" height="56"></rect><text x="618" y="354">Hybrid Retriever</text><text x="618" y="370">FAISS + BM25 blend</text></g>
+      <g class="node" data-k="whisper"><rect x="739" y="330" width="205" height="56"></rect><text x="841" y="354">Audio Transcriber</text><text x="841" y="370">OpenAI Whisper</text></g>
+
+      <!-- vector stores -->
+      <g class="node" data-k="textidx"><rect x="60" y="505" width="230" height="56"></rect><text x="175" y="529">Text FAISS Index</text><text x="175" y="545">IndexFlatIP · 384-d</text></g>
+
+      <!-- resolution + observability -->
+      <g class="node" data-k="genvision"><rect x="360" y="505" width="132" height="56"></rect><text x="426" y="529">generate_</text><text x="426" y="545">vision()</text></g>
+      <g class="node" data-k="gentext"><rect x="507" y="505" width="132" height="56"></rect><text x="573" y="529">generate()</text><text x="573" y="545">text LLM</text></g>
+      <g class="node" data-k="eviction"><rect x="654" y="505" width="132" height="56"></rect><text x="720" y="529">Eviction</text><text x="720" y="545">TTL + LRU</text></g>
+      <g class="node" data-k="logger"><rect x="801" y="505" width="132" height="56"></rect><text x="867" y="529">SQLite Log</text><text x="867" y="545">+ Dashboard</text></g>
+    </svg>
+  </div>
+  <div class="arch-detail" id="archDetail">
+    <h4>Pick a component</h4>
+    <p>Every query — text, image or audio — enters through one <code>CachePipeline</code>, so the hit/miss decision, eviction and logging logic exist in exactly one place instead of being duplicated per modality.</p>
+    <p class="meta">// hover or tap any box in the diagram</p>
+  </div>
+</section>
+
+<!-- FLOW -->
+<section id="flow" class="section reveal">
+  <h2 class="section-title"><span class="tag">#</span> query_lifecycle</h2>
+  <p class="section-sub">what happens between submitting a query and getting a response</p>
+  <div class="flow-controls">
+    <button class="btn btn-outline" id="playFlow">▶ run the trace</button>
+    <span class="dim" style="font-size:.8rem;">or click any step</span>
+  </div>
+  <div class="flow" id="flowList">
+    <div class="step on" data-n="1">
+      <h4>Query embedded</h4>
+      <div class="sd">Text goes through <code>Embedder</code> (Sentence-Transformers), images through <code>ImageEmbedder</code> (CLIP), producing an L2-normalized vector. Audio is transcribed to text first via <code>AudioTranscriber</code> and re-enters this same step as a text query.</div>
+    </div>
+    <div class="step" data-n="2">
+      <h4>FAISS similarity search</h4>
+      <div class="sd">The vector is compared against every cached entry in an <code>IndexFlatIP</code> index. With L2-normalized vectors, inner product equals cosine similarity — no separate normalization step needed at query time.</div>
+    </div>
+    <div class="step" data-n="3">
+      <h4>Hybrid rescoring (optional)</h4>
+      <div class="sd">If hybrid mode is on, a parallel <code>BM25Okapi</code> keyword search runs over the same cached queries, and the two scores blend as <code>hybrid = vector_weight·cosine + bm25_weight·bm25_norm</code> — rescuing exact keyword matches the embedding blurred.</div>
+    </div>
+    <div class="step" data-n="4">
+      <h4>Threshold check</h4>
+      <div class="sd">The best-scoring candidate is accepted as a <span class="hl">HIT</span> only if it clears <code>SIMILARITY_THRESHOLD</code> (or <code>HYBRID_SIMILARITY_THRESHOLD</code> in hybrid mode) — otherwise it's a <span class="hl">MISS</span>, and generation is required.</div>
+    </div>
+    <div class="step" data-n="5">
+      <h4>HIT → instant return</h4>
+      <div class="sd">A hit reads the cached response straight from in-memory metadata — no model call, no network round trip. This is the &lt;10ms path, and it also marks the entry as just-used for LRU.</div>
+    </div>
+    <div class="step" data-n="6">
+      <h4>MISS → generate + cache</h4>
+      <div class="sd">A miss calls <code>LLMClient.generate()</code> (text) or <code>generate_vision()</code> (image, base64-encoded or URL), then <code>SemanticCache.put()</code> stores the new pair — triggering TTL/LRU eviction checks before the write completes.</div>
+    </div>
+    <div class="step" data-n="7">
+      <h4>Logged &amp; visualized</h4>
+      <div class="sd">Every request — hit or miss, whichever modality — is written to SQLite via <code>RequestLogger</code> with a <code>modality</code> label, then rendered live in the Streamlit dashboard's KPIs, charts and log table.</div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section id="features" class="section reveal">
+  <h2 class="section-title"><span class="tag">#</span> what_it_does</h2>
+  <p class="section-sub">the feature set, honestly summarised</p>
+  <div class="grid-3">
+    <div class="card"><div class="ico">⚡</div><h3>Sub-10ms cache hits</h3><p>A HIT reads straight from the in-memory FAISS index and metadata — no model call, no network round trip.</p></div>
+    <div class="card"><div class="ico">🔀</div><h3>Hybrid vector + BM25 search</h3><p>Blends cosine similarity with keyword scoring so exact terms, IDs and acronyms aren't lost to embedding drift.</p></div>
+    <div class="card"><div class="ico">🧹</div><h3>TTL + LRU eviction</h3><p>Age-based expiry and a least-recently-accessed capacity cap, both off by default and rebuilt from stored FAISS vectors — no re-embedding needed.</p></div>
+    <div class="card"><div class="ico">🖼️</div><h3>Image caching (CLIP)</h3><p>Images get their own 512-d vector space and index, matched by visual similarity, independent of the text cache.</p></div>
+    <div class="card"><div class="ico">🎤</div><h3>Audio caching (Whisper)</h3><p>Audio is transcribed to text and reuses the exact same text cache — no separate audio vector space to maintain.</p></div>
+    <div class="card"><div class="ico">📊</div><h3>Live analytics dashboard</h3><p>Streamlit dashboard with hit-rate, latency, cost-saved KPIs, request logs and a raw cache inspector.</p></div>
+    <div class="card"><div class="ico">🗄️</div><h3>SQLite request logging</h3><p>Every request logged with modality, latency and hit/miss — schema self-migrates for older DB files.</p></div>
+    <div class="card"><div class="ico">🧪</div><h3>72 automated tests</h3><p>Deterministic fake embedders and mocked LLM/API calls — no real network access required to verify correctness.</p></div>
+    <div class="card"><div class="ico">⚙️</div><h3>CI/CD pipeline</h3><p>GitHub Actions runs flake8 and the full pytest suite on every push.</p></div>
+  </div>
+</section>
+
+<!-- SCREENS -->
+<section id="screens" class="section reveal">
+  <h2 class="section-title"><span class="tag">#</span> screens</h2>
+  <p class="section-sub">click any shot to open it full size — ← → to move, esc to close</p>
+  <div class="filters" id="filters">
+    <button class="filter on" data-f="all">all</button>
+    <button class="filter" data-f="playground">playground</button>
+    <button class="filter" data-f="config">config</button>
+    <button class="filter" data-f="analytics">analytics</button>
+    <button class="filter" data-f="logs">logs</button>
+    <button class="filter" data-f="multimodal">multi-modal</button>
+  </div>
+  <div class="gallery" id="gallery">
+
+    <figure class="shot" data-cat="playground" data-full="images/Screenshot%202026-09-09%20190729.png">
+      <img loading="lazy" src="images/Screenshot%202026-09-09%20190729.png" alt="Live Query Playground, empty state, with sidebar cache configuration">
+      <figcaption><b>Live Query Playground</b>Fresh dashboard — cache configuration, eviction policy and system info all live in the sidebar, KPIs at zero before the first query.</figcaption>
+    </figure>
+
+    <figure class="shot" data-cat="playground" data-full="images/Screenshot%202026-09-09%20190956.png">
+      <img loading="lazy" src="images/Screenshot%202026-09-09%20190956.png" alt="Playground after a cache hit, KPI bar showing 2 hits out of 3 requests">
+      <figcaption><b>A hit registers</b>After a paraphrase, the KPI bar updates instantly — 2 hits / 1 miss, 66.7% hit rate, sub-32ms average hit latency.</figcaption>
+    </figure>
+
+    <figure class="shot" data-cat="config" data-full="images/Screenshot%202026-09-09%20191243.png">
+      <img loading="lazy" src="images/Screenshot%202026-09-09%20191243.png" alt="Hybrid search enabled with vector and BM25 weight sliders">
+      <figcaption><b>Hybrid search tuning</b>Toggle on Hybrid Search and the sidebar swaps in live threshold and vector/BM25 weight sliders — retrieval mode updates to "Hybrid" immediately.</figcaption>
+    </figure>
+
+    <figure class="shot" data-cat="config" data-full="images/Screenshot%202026-09-09%20191415.png">
+      <img loading="lazy" src="images/Screenshot%202026-09-09%20191415.png" alt="Eviction policy toggles and cache management buttons in the sidebar">
+      <figcaption><b>Eviction &amp; management</b>TTL Expiry and LRU Capacity Cap toggles, a Prune Now button, and Clear Cache / Reset Logs controls for resetting state on demand.</figcaption>
+    </figure>
+
+    <figure class="shot" data-cat="analytics" data-full="images/Screenshot%202026-09-09%20191026.png">
+      <img loading="lazy" src="images/Screenshot%202026-09-09%20191026.png" alt="Hit vs miss bar chart and latency comparison chart">
+      <figcaption><b>Hit vs. miss distribution</b>Side-by-side bar charts comparing hit/miss counts and their average latency — the gap between ~30ms hits and ~200ms misses is the whole point of caching.</figcaption>
+    </figure>
+
+    <figure class="shot" data-cat="analytics" data-full="images/Screenshot%202026-09-09%20191040.png">
+      <img loading="lazy" src="images/Screenshot%202026-09-09%20191040.png" alt="Similarity score distribution line chart for cache hits">
+      <figcaption><b>Similarity score distribution</b>Tracks the similarity score of every hit over time, so a drifting threshold or a degrading embedding match is visible at a glance.</figcaption>
+    </figure>
+
+    <figure class="shot" data-cat="logs" data-full="images/Screenshot%202026-09-09%20191102.png">
+      <img loading="lazy" src="images/Screenshot%202026-09-09%20191102.png" alt="Request history log table with query, response, similarity, latency and modality columns">
+      <figcaption><b>Request history log</b>Every request — query, response, hit status, similarity, latency, matched query and modality — filterable by status and searchable by text.</figcaption>
+    </figure>
+
+    <figure class="shot" data-cat="logs" data-full="images/Screenshot%202026-09-09%20191116.png">
+      <img loading="lazy" src="images/Screenshot%202026-09-09%20191116.png" alt="Cache inspector table showing the raw FAISS-backed vector store">
+      <figcaption><b>Cache inspector</b>The raw FAISS-backed store itself — query, response, cached_at and last_accessed_at for every indexed entry, plus the active eviction policy.</figcaption>
+    </figure>
+
+    <figure class="shot" data-cat="multimodal" data-full="images/Screenshot%202026-09-09%20190755.png">
+      <img loading="lazy" src="images/Screenshot%202026-09-09%20190755.png" alt="Multi-Modal Playground with image and audio upload widgets">
+      <figcaption><b>Multi-modal playground</b>Side-by-side image and audio upload widgets, each with a mock-mode checkbox so the flow can be tested without a live OpenAI API key.</figcaption>
+    </figure>
+
+    <figure class="shot" data-cat="multimodal" data-full="images/Screenshot%202026-09-09%20191530.png">
+      <img loading="lazy" src="images/Screenshot%202026-09-09%20191530.png" alt="Image query submitted, CLIP model loading in progress">
+      <figcaption><b>Image query in flight</b>An uploaded image submitted for lookup — the CLIP model loads lazily on first use, shown here mid-<code>get_image_cache()</code> call.</figcaption>
+    </figure>
+
+  </div>
+</section>
+
+<!-- RETRIEVAL MODES -->
+<section id="retrieval" class="section reveal">
+  <h2 class="section-title"><span class="tag">#</span> retrieval_modes</h2>
+  <p class="section-sub">how a match is judged, per modality</p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Modality</th><th>Embedding</th><th>Retrieval</th><th>Match signal</th></tr></thead>
+      <tbody>
+        <tr><td><b>Text</b></td><td><code>all-MiniLM-L6-v2</code> · 384-d</td><td>Vector-only, or Hybrid (Vector + BM25)</td><td>Cosine similarity ≥ <code>SIMILARITY_THRESHOLD</code>, or blended hybrid score</td></tr>
+        <tr><td><b>Image</b></td><td><code>clip-ViT-B-32</code> · 512-d</td><td>Vector-only (hybrid always off)</td><td>Cosine similarity in a separate FAISS index</td></tr>
+        <tr><td><b>Audio</b></td><td>n/a — transcribed first</td><td>Same as Text, after transcription</td><td>Whatever the resulting transcript scores as a text query</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div style="margin-top:1.4rem;">
+    <p class="dim" style="font-size:.82rem;margin-bottom:.5rem;">// hybrid score blend, evaluated per lookup when <code style="color:var(--green)">ENABLE_HYBRID_SEARCH</code> is on</p>
+    <div class="code">
+      <button class="copy">copy</button>
+<pre>hybrid_score = VECTOR_WEIGHT * cosine_similarity + BM25_WEIGHT * bm25_normalized
+# accepted as a HIT when hybrid_score >= HYBRID_SIMILARITY_THRESHOLD</pre>
+    </div>
+  </div>
+</section>
+
+<!-- MODULES -->
+<section id="modules" class="section reveal">
+  <h2 class="section-title"><span class="tag">#</span> core_modules</h2>
+  <p class="section-sub">what lives in <code>src/</code>, grouped by role</p>
+
+  <div class="acc open">
+    <button class="acc-head"><span><span class="chev">▸</span> &nbsp;Cache engine</span><span class="n">3 modules</span></button>
+    <div class="acc-body">
+      <div class="ep"><span class="m core">cache.py</span><span class="p">SemanticCache</span><span class="d">FAISS index, put/get, eviction, modality dispatch</span></div>
+      <div class="ep"><span class="m core">models.py</span><span class="p">CacheResult, RequestLog</span><span class="d">typed results + log entries</span></div>
+      <div class="ep"><span class="m core">config.py</span><span class="p">env-driven settings</span><span class="d">thresholds, weights, TTL/LRU, model names</span></div>
+    </div>
+  </div>
+
+  <div class="acc">
+    <button class="acc-head"><span><span class="chev">▸</span> &nbsp;Embedding &amp; retrieval</span><span class="n">4 modules</span></button>
+    <div class="acc-body">
+      <div class="ep"><span class="m retr">embedder.py</span><span class="p">Embedder</span><span class="d">Sentence-Transformers text embeddings</span></div>
+      <div class="ep"><span class="m retr">image_embedder.py</span><span class="p">ImageEmbedder</span><span class="d">CLIP image embeddings</span></div>
+      <div class="ep"><span class="m retr">bm25_index.py</span><span class="p">BM25Index</span><span class="d">tokenized keyword index over cached queries</span></div>
+      <div class="ep"><span class="m retr">hybrid_search.py</span><span class="p">blend()</span><span class="d">vector + BM25 score fusion</span></div>
+    </div>
+  </div>
+
+  <div class="acc">
+    <button class="acc-head"><span><span class="chev">▸</span> &nbsp;Multi-modal + generation</span><span class="n">2 modules</span></button>
+    <div class="acc-body">
+      <div class="ep"><span class="m mm">audio_transcriber.py</span><span class="p">AudioTranscriber</span><span class="d">OpenAI Whisper speech-to-text</span></div>
+      <div class="ep"><span class="m mm">llm.py</span><span class="p">LLMClient</span><span class="d">generate() + generate_vision(), retry w/ backoff</span></div>
+    </div>
+  </div>
+
+  <div class="acc">
+    <button class="acc-head"><span><span class="chev">▸</span> &nbsp;Orchestration &amp; observability</span><span class="n">2 modules</span></button>
+    <div class="acc-body">
+      <div class="ep"><span class="m evic">pipeline.py</span><span class="p">CachePipeline</span><span class="d">process_query / _image_query / _audio_query</span></div>
+      <div class="ep"><span class="m evic">request_logger.py</span><span class="p">RequestLogger</span><span class="d">SQLite persistence, self-migrating schema, KPI aggregation</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- BUILD -->
+<section id="build" class="section reveal">
+  <h2 class="section-title"><span class="tag">#</span> run_it_yourself</h2>
+  <p class="section-sub">runs entirely with a mock LLM — no API key required to try it</p>
+  <div class="grid-2">
+    <div>
+      <p class="dim" style="font-size:.82rem;">// clone &amp; set up</p>
+      <div class="code">
+        <button class="copy">copy</button>
+<pre><span class="c"># clone and enter the project</span>
+git clone https://github.com/itz-Maheshkumar/Semantic_Cache_Application.git
+cd Semantic_Cache_Application
+
+<span class="c"># virtual environment</span>
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt</pre>
+      </div>
+    </div>
+    <div>
+      <p class="dim" style="font-size:.82rem;">// configure &amp; launch</p>
+      <div class="code">
+        <button class="copy">copy</button>
+<pre><span class="c"># optional: add a real OPENAI_API_KEY</span>
+copy .env.example .env
+
+<span class="c"># launch the dashboard</span>
+streamlit run app.py
+
+<span class="c"># run the test suite</span>
+pytest tests/ --verbose</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- NOTES -->
+<section id="notes" class="section reveal">
+  <h2 class="section-title"><span class="tag">#</span> engineering_notes</h2>
+  <p class="section-sub">decisions worth defending in an interview</p>
+  <div class="grid-2">
+    <div>
+      <div class="note"><h4>Eviction rebuilds, never re-embeds</h4><p>TTL/LRU pruning rebuilds the FAISS index directly from its own stored vectors (<code>reconstruct_n</code>), so removing entries never calls the embedding model — pruning stays cheap regardless of corpus size.</p></div>
+      <div class="note"><h4>LRU touches stay in memory</h4><p><code>last_accessed_at</code> updates on every cache HIT, but only in memory — never triggering disk I/O on the hot path. Persistence happens on the next write, keeping hit latency under 10ms.</p></div>
+      <div class="note"><h4>Hybrid is opt-in by design</h4><p><code>ENABLE_HYBRID_SEARCH</code> defaults to false, so existing vector-only deployments and their similarity thresholds behave identically unless a caller explicitly opts in.</p></div>
+    </div>
+    <div>
+      <div class="note"><h4>Images and text never share a space</h4><p>CLIP's 512-d image embeddings and MiniLM's 384-d text embeddings aren't comparable, so image queries always get their own FAISS index — never a cross-modal lookup that would silently return nonsense.</p></div>
+      <div class="note"><h4>Audio reuses the text cache on purpose</h4><p>Rather than build a third vector space, an audio query is transcribed and dropped straight into the existing text pipeline — two spoken queries that mean the same thing become the same cache problem the project already solves.</p></div>
+      <div class="note"><h4>Everything is testable without a network</h4><p>Deterministic fake embedders (orthonormal basis vectors) and mocked OpenAI clients mean all 72 tests run without real model downloads or API calls — CI has no <code>OPENAI_API_KEY</code> secret, and doesn't need one.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section reveal" style="padding-top:0;">
+  <div class="terminal-window">
+    <div class="terminal-bar"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span><span class="terminal-title">./next_steps.sh</span></div>
+    <div class="terminal-body" style="text-align:center;">
+      <p><span class="prompt">$</span> echo "read the code, or come back to the rest of the work"</p>
+      <div class="hero-links" style="justify-content:center;margin-top:1.2rem;">
+        <a class="btn btn-primary" href="https://github.com/itz-Maheshkumar/Semantic_Cache_Application" target="_blank" rel="noopener">./view_source</a>
+        <a class="btn btn-outline" href="https://itz-Maheshkumar.github.io/#projects">./other_projects</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <p><span class="prompt">$</span> print("built by Maheshkumar Venkatachalam")</p>
+  <p class="dim">© <span id="year"></span> Maheshkumar Venkatachalam — project deep dive, hosted on GitHub Pages.</p>
+</footer>
+
+<div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="Screenshot viewer">
+  <button class="lb-close" id="lbClose" aria-label="Close">esc ✕</button>
+  <button class="lb-nav lb-prev" id="lbPrev" aria-label="Previous">‹</button>
+  <button class="lb-nav lb-next" id="lbNext" aria-label="Next">›</button>
+  <img id="lbImg" src="" alt="">
+  <div class="lb-cap" id="lbCap"></div>
+</div>
+
+<script>
+/* ---------- matrix background ---------- */
+(function(){
+  var c=document.getElementById('matrix-bg');
+  if(!c||window.matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  var ctx=c.getContext('2d'),cols,drops,fs=14;
+  var chars='EMBEDFAISSCACHEHIT01{}$;TTL'.split('');
+  function size(){c.width=window.innerWidth;c.height=window.innerHeight;cols=Math.floor(c.width/fs);drops=new Array(cols).fill(1);}
+  size();window.addEventListener('resize',size);
+  setInterval(function(){
+    ctx.fillStyle='rgba(13,17,23,0.06)';ctx.fillRect(0,0,c.width,c.height);
+    ctx.fillStyle='#39FF14';ctx.font=fs+'px monospace';
+    for(var i=0;i<drops.length;i++){
+      ctx.fillText(chars[Math.floor(Math.random()*chars.length)],i*fs,drops[i]*fs);
+      if(drops[i]*fs>c.height&&Math.random()>0.975)drops[i]=0;
+      drops[i]++;
+    }
+  },60);
+})();
+
+/* ---------- nav ---------- */
+document.getElementById('navToggle').addEventListener('click',function(){
+  document.getElementById('navLinks').classList.toggle('open');
+});
+document.querySelectorAll('.nav-links a').forEach(function(a){
+  a.addEventListener('click',function(){document.getElementById('navLinks').classList.remove('open');});
+});
+document.getElementById('year').textContent=new Date().getFullYear();
+
+/* ---------- scroll progress + spy ---------- */
+var bar=document.getElementById('progress');
+var secs=[].slice.call(document.querySelectorAll('main section[id]'));
+var links=[].slice.call(document.querySelectorAll('.nav-links a'));
+function onScroll(){
+  var h=document.documentElement.scrollHeight-window.innerHeight;
+  bar.style.width=(h>0?(window.scrollY/h)*100:0)+'%';
+  var cur='';
+  secs.forEach(function(s){ if(window.scrollY>=s.offsetTop-140) cur=s.id; });
+  links.forEach(function(l){ l.classList.toggle('active', l.getAttribute('href')==='#'+cur); });
+}
+window.addEventListener('scroll',onScroll,{passive:true});onScroll();
+
+/* ---------- reveal ---------- */
+var io=new IntersectionObserver(function(es){
+  es.forEach(function(e){ if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);} });
+},{threshold:0.08});
+document.querySelectorAll('.reveal').forEach(function(el){io.observe(el);});
+
+/* ---------- counters ---------- */
+var cio=new IntersectionObserver(function(es){
+  es.forEach(function(e){
+    if(!e.isIntersecting)return;
+    var el=e.target,target=+el.dataset.count,n=0;
+    var t=setInterval(function(){n++;el.textContent=n;if(n>=target)clearInterval(t);},260/Math.max(target,1)+34);
+    cio.unobserve(el);
+  });
+},{threshold:0.5});
+document.querySelectorAll('[data-count]').forEach(function(el){cio.observe(el);});
+
+/* ---------- architecture detail ---------- */
+var ARCH={
+  textq:['Text query','Typed into the Live Query Playground — the baseline path every other modality eventually funnels back into.','client · Streamlit text_area'],
+  imgq:['Image upload','A file uploaded in the Multi-Modal Playground — a path, raw bytes, or a PIL.Image once it reaches the pipeline.','client · st.file_uploader'],
+  audq:['Audio upload','A short audio clip uploaded for transcription before it ever touches the cache.','client · st.file_uploader'],
+  gateway:['CachePipeline','The single entry point for every modality. Decides hit vs miss, calls the right generator on a miss, and always logs the outcome — so that logic exists in exactly one place.','src/pipeline.py'],
+  embedder:['Text embedder','Sentence-Transformers all-MiniLM-L6-v2 — encodes a query into a 384-dimensional, L2-normalized vector.','src/embedder.py'],
+  imgembed:['Image embedder','A CLIP model (clip-ViT-B-32) encodes an image into a 512-dimensional vector — a completely separate space from text.','src/image_embedder.py'],
+  hybrid:['Hybrid retriever','Runs FAISS vector search and a BM25Okapi keyword search over the same corpus, blends their scores, and ranks candidates by the result.','src/hybrid_search.py + bm25_index.py'],
+  whisper:['Audio transcriber','OpenAI Whisper turns the uploaded audio into text, which then re-enters the pipeline as an ordinary text query.','src/audio_transcriber.py'],
+  textidx:['Text FAISS index','IndexFlatIP over 384-d vectors — inner product equals cosine similarity once vectors are L2-normalized.','faiss.IndexFlatIP'],
+  genvision:['generate_vision()','A vision-capable OpenAI chat completion for image misses — local images are base64-encoded, URLs are passed straight through.','src/llm.py'],
+  gentext:['generate()','The text LLM call on a miss, with exponential-backoff retries on transient API errors.','src/llm.py'],
+  eviction:['Eviction engine','TTL (age-based) and LRU (capacity-based) pruning, both off by default, both rebuilding the FAISS index from stored vectors rather than re-embedding.','SemanticCache.prune_expired / enforce_capacity'],
+  logger:['Request logger + dashboard','Every outcome is written to SQLite with a modality label, then rendered live as KPIs, charts and a filterable log table.','src/request_logger.py + app.py']
+};
+var detail=document.getElementById('archDetail');
+function showArch(k,node){
+  var d=ARCH[k];if(!d)return;
+  detail.innerHTML='<h4>'+d[0]+'</h4><p>'+d[1]+'</p><p class="meta">// '+d[2]+'</p>';
+  document.querySelectorAll('.node').forEach(function(n){n.classList.remove('sel');});
+  if(node)node.classList.add('sel');
+}
+document.querySelectorAll('.node').forEach(function(n){
+  n.addEventListener('mouseenter',function(){showArch(n.dataset.k,n);});
+  n.addEventListener('click',function(){showArch(n.dataset.k,n);});
+});
+
+/* ---------- flow stepper ---------- */
+var steps=[].slice.call(document.querySelectorAll('.step'));
+function openStep(i){steps.forEach(function(s,j){s.classList.toggle('on',i===j);});}
+steps.forEach(function(s,i){s.addEventListener('click',function(){openStep(i);});});
+var playing=null;
+document.getElementById('playFlow').addEventListener('click',function(){
+  var btn=this;
+  if(playing){clearInterval(playing);playing=null;btn.textContent='▶ run the trace';return;}
+  var i=0;openStep(0);btn.textContent='■ stop';
+  playing=setInterval(function(){
+    i++;
+    if(i>=steps.length){clearInterval(playing);playing=null;btn.textContent='▶ run the trace';return;}
+    openStep(i);
+  },2600);
+});
+
+/* ---------- gallery filter ---------- */
+var shots=[].slice.call(document.querySelectorAll('figure.shot'));
+document.getElementById('filters').addEventListener('click',function(e){
+  var b=e.target.closest('.filter');if(!b)return;
+  document.querySelectorAll('.filter').forEach(function(f){f.classList.remove('on');});
+  b.classList.add('on');
+  var f=b.dataset.f;
+  shots.forEach(function(s){s.classList.toggle('hide',f!=='all'&&s.dataset.cat!==f);});
+});
+
+/* ---------- lightbox ---------- */
+var lb=document.getElementById('lb'),lbImg=document.getElementById('lbImg'),lbCap=document.getElementById('lbCap'),idx=0;
+function visible(){return shots.filter(function(s){return !s.classList.contains('hide');});}
+function openLb(fig){
+  var list=visible();idx=list.indexOf(fig);paint();
+  lb.classList.add('open');document.body.style.overflow='hidden';
+}
+function paint(){
+  var list=visible(),fig=list[idx];if(!fig)return;
+  lbImg.src=fig.dataset.full;lbImg.alt=fig.querySelector('img').alt;
+  var cap=fig.querySelector('figcaption');
+  lbCap.innerHTML='<b>'+cap.querySelector('b').textContent+'</b><span>'+cap.textContent.replace(cap.querySelector('b').textContent,'')+'</span>';
+}
+function move(d){var list=visible();idx=(idx+d+list.length)%list.length;paint();}
+function closeLb(){lb.classList.remove('open');document.body.style.overflow='';}
+shots.forEach(function(s){s.addEventListener('click',function(){openLb(s);});});
+document.getElementById('lbClose').addEventListener('click',closeLb);
+document.getElementById('lbPrev').addEventListener('click',function(e){e.stopPropagation();move(-1);});
+document.getElementById('lbNext').addEventListener('click',function(e){e.stopPropagation();move(1);});
+lb.addEventListener('click',function(e){if(e.target===lb)closeLb();});
+document.addEventListener('keydown',function(e){
+  if(!lb.classList.contains('open'))return;
+  if(e.key==='Escape')closeLb();
+  if(e.key==='ArrowLeft')move(-1);
+  if(e.key==='ArrowRight')move(1);
+});
+
+/* ---------- accordion ---------- */
+document.querySelectorAll('.acc-head').forEach(function(h){
+  h.addEventListener('click',function(){h.parentElement.classList.toggle('open');});
+});
+
+/* ---------- copy buttons ---------- */
+document.querySelectorAll('.copy').forEach(function(b){
+  b.addEventListener('click',function(){
+    var txt=b.parentElement.querySelector('pre').innerText;
+    navigator.clipboard.writeText(txt).then(function(){
+      b.textContent='copied ✓';setTimeout(function(){b.textContent='copy';},1600);
+    }).catch(function(){b.textContent='ctrl+c';setTimeout(function(){b.textContent='copy';},1600);});
+  });
+});
+</script>
+</body>
+</html>
