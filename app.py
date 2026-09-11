@@ -21,6 +21,8 @@ from src.config import (
     CACHE_TTL_SECONDS,
     CACHE_MAX_SIZE,
     IMAGE_EMBEDDING_MODEL,
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
 )
 from src.embedder import Embedder
 from src.image_embedder import ImageEmbedder
@@ -28,6 +30,25 @@ from src.llm import LLMClient
 from src.modality import Modality
 from src.pipeline import CachePipeline
 from src.request_logger import RequestLogger
+
+
+def _llm_configured() -> bool:
+    """
+    True when a real OpenAI API key is set — i.e. OPENAI_API_KEY is non-empty,
+    isn't the literal placeholder shipped in .env.example, and looks like an
+    OpenAI key. Used to pick a sane default for the "Use Mock ..." checkboxes
+    below: mock ON by default with no key configured (so the app never
+    crashes out of the box), mock OFF by default once a real key is set (so
+    a configured deployment shows real responses without extra clicks).
+    """
+    return (
+        bool(OPENAI_API_KEY)
+        and OPENAI_API_KEY.strip() != "sk-...your-key-here..."
+        and OPENAI_API_KEY.startswith("sk-")
+    )
+
+
+LLM_READY = _llm_configured()
 
 # ── Page Configuration ────────────────────────────────────────────────────────
 st.set_page_config(
@@ -179,6 +200,11 @@ with st.sidebar:
     st.subheader("System Info")
     st.write(f"**Embedding Model:** `{EMBEDDING_MODEL}`")
     st.write(f"**Retrieval Mode:** `{'Hybrid (Vector + BM25)' if hybrid_mode else 'Vector Only'}`")
+    if LLM_READY:
+        st.write(f"**LLM Provider:** 🟢 Live — `{OPENAI_MODEL}`")
+    else:
+        st.write("**LLM Provider:** 🟡 Not configured (Mock only)")
+        st.caption("Set a real OPENAI_API_KEY in `.env` to enable live responses.")
 
     # Retrieve instances (cached across reruns; live settings are applied below)
     cache, request_logger, pipeline = get_components(similarity_threshold)
@@ -319,7 +345,7 @@ with tab1:
 
         mock_llm_mode = st.checkbox(
             "Use Mock LLM (Simulated response without API key)",
-            value=True,
+            value=not LLM_READY,
             help="Uncheck if you have set your OPENAI_API_KEY in .env.",
         )
 
@@ -333,32 +359,37 @@ with tab1:
             )
 
         with st.spinner("Processing query through semantic pipeline..."):
-            result = pipeline.process_query(user_query.strip())
+            try:
+                result = pipeline.process_query(user_query.strip())
+            except Exception as e:
+                st.error(f"Query failed: {e}")
+                result = None
 
-        st.markdown("### Result")
-        res_col1, res_col2 = st.columns([1, 2])
+        if result is not None:
+            st.markdown("### Result")
+            res_col1, res_col2 = st.columns([1, 2])
 
-        with res_col1:
-            if result["is_hit"]:
-                st.markdown('<div class="badge-hit">✅ CACHE HIT</div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="badge-miss">❌ CACHE MISS</div>', unsafe_allow_html=True)
+            with res_col1:
+                if result["is_hit"]:
+                    st.markdown('<div class="badge-hit">✅ CACHE HIT</div>', unsafe_allow_html=True)
+                else:
+                    st.markdown('<div class="badge-miss">❌ CACHE MISS</div>', unsafe_allow_html=True)
 
-            st.write(f"**Latency:** `{result['latency_ms']:.2f} ms`")
-            score_label = "Hybrid Score" if result.get("vector_score") is not None else "Similarity Score"
-            st.write(f"**{score_label}:** `{result['similarity_score']:.4f}`")
-            if result.get("vector_score") is not None:
-                st.caption(
-                    f"Vector: `{result['vector_score']:.4f}` · BM25: `{result['bm25_score']:.4f}`"
-                )
-            if result["matched_query"]:
-                st.write(f"**Matched Cache Query:** *\"{result['matched_query']}\"*")
+                st.write(f"**Latency:** `{result['latency_ms']:.2f} ms`")
+                score_label = "Hybrid Score" if result.get("vector_score") is not None else "Similarity Score"
+                st.write(f"**{score_label}:** `{result['similarity_score']:.4f}`")
+                if result.get("vector_score") is not None:
+                    st.caption(
+                        f"Vector: `{result['vector_score']:.4f}` · BM25: `{result['bm25_score']:.4f}`"
+                    )
+                if result["matched_query"]:
+                    st.write(f"**Matched Cache Query:** *\"{result['matched_query']}\"*")
 
-        with res_col2:
-            st.subheader("Response")
-            st.info(result["response"])
+            with res_col2:
+                st.subheader("Response")
+                st.info(result["response"])
 
-        st.rerun()
+            st.rerun()
 
 # ── TAB 2: Performance Analytics ─────────────────────────────────────────────
 with tab2:
@@ -472,7 +503,7 @@ with tab5:
         )
         mock_vision_mode = st.checkbox(
             "Use Mock Vision LLM (Simulated response without API key)",
-            value=True,
+            value=not LLM_READY,
             key="mock_vision_mode",
             help="Uncheck if you have set your OPENAI_API_KEY in .env.",
         )
@@ -525,7 +556,7 @@ with tab5:
         )
         mock_audio_mode = st.checkbox(
             "Use Mock Transcription + LLM (Simulated response without API key)",
-            value=True,
+            value=not LLM_READY,
             key="mock_audio_mode",
             help="Uncheck if you have set your OPENAI_API_KEY in .env.",
         )
