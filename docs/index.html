@@ -413,6 +413,7 @@ td code{color:var(--green);font-size:.9em;}
     <div class="card"><div class="ico">🧹</div><h3>TTL + LRU eviction</h3><p>Age-based expiry and a least-recently-accessed capacity cap, both off by default and rebuilt from stored FAISS vectors — no re-embedding needed.</p></div>
     <div class="card"><div class="ico">🖼️</div><h3>Image caching (CLIP)</h3><p>Images get their own 512-d vector space and index, matched by visual similarity, independent of the text cache.</p></div>
     <div class="card"><div class="ico">🎤</div><h3>Audio caching (Whisper)</h3><p>Audio is transcribed to text and reuses the exact same text cache — no separate audio vector space to maintain.</p></div>
+    <div class="card"><div class="ico">🔌</div><h3>Mock/Live LLM auto-detect</h3><p>The sidebar shows 🟢 Live or 🟡 Mock at a glance — each playground's mock checkbox defaults itself from whether a real <code>OPENAI_API_KEY</code> is configured, no manual toggling required.</p></div>
     <div class="card"><div class="ico">📊</div><h3>Live analytics dashboard</h3><p>Streamlit dashboard with hit-rate, latency, cost-saved KPIs, request logs and a raw cache inspector.</p></div>
     <div class="card"><div class="ico">🗄️</div><h3>SQLite request logging</h3><p>Every request logged with modality, latency and hit/miss — schema self-migrates for older DB files.</p></div>
     <div class="card"><div class="ico">🧪</div><h3>72 automated tests</h3><p>Deterministic fake embedders and mocked LLM/API calls — no real network access required to verify correctness.</p></div>
@@ -575,7 +576,8 @@ pip install -r requirements.txt</pre>
       <p class="dim" style="font-size:.82rem;">// configure &amp; launch</p>
       <div class="code">
         <button class="copy">copy</button>
-<pre><span class="c"># optional: add a real OPENAI_API_KEY</span>
+<pre><span class="c"># optional: add a real OPENAI_API_KEY — the dashboard</span>
+<span class="c"># auto-switches Mock -> Live, nothing else to change</span>
 copy .env.example .env
 
 <span class="c"># launch the dashboard</span>
@@ -602,6 +604,7 @@ pytest tests/ --verbose</pre>
       <div class="note"><h4>Images and text never share a space</h4><p>CLIP's 512-d image embeddings and MiniLM's 384-d text embeddings aren't comparable, so image queries always get their own FAISS index — never a cross-modal lookup that would silently return nonsense.</p></div>
       <div class="note"><h4>Audio reuses the text cache on purpose</h4><p>Rather than build a third vector space, an audio query is transcribed and dropped straight into the existing text pipeline — two spoken queries that mean the same thing become the same cache problem the project already solves.</p></div>
       <div class="note"><h4>Everything is testable without a network</h4><p>Deterministic fake embedders (orthonormal basis vectors) and mocked OpenAI clients mean all 72 tests run without real model downloads or API calls — CI has no <code>OPENAI_API_KEY</code> secret, and doesn't need one.</p></div>
+      <div class="note"><h4>Mock and live share one code path</h4><p>Switching modes never branches the pipeline itself — it just swaps which callable <code>LLMClient.generate()</code>/<code>generate_vision()</code> resolves to. <code>CachePipeline</code>, the cache and the logger never know or care whether a response was real.</p></div>
     </div>
   </div>
 </section>
