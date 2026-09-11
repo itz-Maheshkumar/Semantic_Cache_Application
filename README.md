@@ -171,6 +171,26 @@ Both features are entirely additive: a `CachePipeline` built without `image_cach
 
 ---
 
+## 🔌 LLM Provider: Mock vs. Live
+
+Every OpenAI call in the app — text generation, vision, and Whisper transcription — can run in two modes:
+
+- **Mock** — a fixed canned response, no network call, no API key needed. Lets you exercise the cache/eviction/hybrid-search mechanics for free.
+- **Live** — a real `gpt-4o-mini` call (and real Whisper transcription for audio), so cache-miss responses reflect the actual model instead of a fixed string.
+
+The Streamlit dashboard now picks a sane default automatically instead of always defaulting to mock: each **"Use Mock ..."** checkbox (Live Query Playground, and the Multi-Modal Playground's image/audio tabs) defaults to **checked** when no real `OPENAI_API_KEY` is configured, and **unchecked** the moment a real key is set in `.env` — nothing to remember to toggle between runs. The sidebar's **System Info** panel also shows the current mode at a glance:
+
+```
+LLM Provider: 🟢 Live — gpt-4o-mini
+LLM Provider: 🟡 Not configured (Mock only)
+```
+
+The Live Query Playground also now catches a failed LLM call (e.g. an invalid or expired key) and shows a clean `st.error(...)` message instead of crashing the page.
+
+> **Note:** mock vs. live only changes what a cache **miss** returns. The semantic-cache hit/miss decision itself is driven entirely by query-embedding similarity (`SIMILARITY_THRESHOLD` / `HYBRID_SIMILARITY_THRESHOLD`) and behaves identically either way — switching to a real key makes miss responses genuine, it doesn't change the hit rate.
+
+---
+
 ## 🛠️ Tech Stack
 
 - **Python 3.12** — Core application development
@@ -251,10 +271,11 @@ semantic-cache-project/
    ```
 
 4. **Configure Environment Variables:**
-   Copy `.env.example` to `.env` and add your OpenAI API key (optional for mock testing):
+   Copy `.env.example` to `.env`:
    ```bash
    cp .env.example .env
    ```
+   Add a real `OPENAI_API_KEY` to enable **live** responses — the dashboard's mock checkboxes automatically default to unchecked once a valid key is detected. Leave the placeholder value in place to keep running fully in **mock** mode (no key required).
 
 5. **Run the Streamlit Dashboard:**
    ```bash
