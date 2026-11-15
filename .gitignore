@@ -35,7 +35,9 @@ venv.bak/
 
 # ===== Environment variables / secrets =====
 .env
-.env.*
+.env.local
+.env.*.local
+!.env.example
 *.key
 *.pem
 secrets.toml
@@ -101,6 +103,15 @@ data/raw/
 data/interim/
 *.csv.bak
 
+# ===== Runtime cache/log state (regenerated on first run — see README) =====
+# Was previously untracked-but-not-ignored, so cache_metadata.json/cache_logs.db
+# got committed and then diverged on every machine that ran the app — a likely
+# source of local merge conflicts. Now ignored; existing tracked copies still
+# need `git rm --cached` once to actually stop being tracked (see chat).
+data/cache_metadata.json
+data/cache_logs.db
+data/image_cache_metadata.json
+
 # ===== IDE / editor =====
 .vscode/
 .idea/
@@ -125,3 +136,6 @@ desktop.ini
 *.bak
 *.tmp
 *.orig
+
+# ===== Documentation =====
+*.docx

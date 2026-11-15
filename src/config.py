@@ -119,6 +119,39 @@ OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 # Maximum number of retry attempts on transient API errors
 LLM_MAX_RETRIES: int = int(os.getenv("LLM_MAX_RETRIES", "3"))
 
+# ── LLM Provider Selection ─────────────────────────────────────────────────
+# Which backend LLMClient (src/llm.py) talks to on a cache miss. All three
+# speak the same OpenAI chat-completions wire format, so switching providers
+# only changes which base_url/api_key/model get used — CachePipeline, the
+# cache and the logger never know or care which one produced a response.
+#   "openai"      -> api.openai.com, using OPENAI_API_KEY / OPENAI_MODEL above
+#   "huggingface" -> Hugging Face's Inference Providers router (an
+#                    OpenAI-compatible endpoint that proxies to many
+#                    open-weight models), using HF_API_KEY / HF_MODEL below.
+#   "groq"        -> Groq's OpenAI-compatible API (fast, free-tier, open
+#                    models), using GROQ_API_KEY / GROQ_MODEL below.
+#                    Note: audio transcription (AUDIO_TRANSCRIPTION_MODEL,
+#                    src/audio_transcriber.py) always uses OPENAI_API_KEY —
+#                    it isn't affected by this setting.
+LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+
+# Hugging Face token (create one at https://huggingface.co/settings/tokens —
+# a "Read" token is enough) and the model id to request through the router,
+# e.g. "meta-llama/Llama-3.1-8B-Instruct" or "Qwen/Qwen2.5-7B-Instruct".
+# Free tier / credits: https://huggingface.co/settings/billing
+HF_API_KEY: str = os.getenv("HF_API_KEY", "")
+HF_MODEL: str = os.getenv("HF_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+HF_BASE_URL: str = os.getenv("HF_BASE_URL", "https://router.huggingface.co/v1")
+
+# Groq API key (create one at https://console.groq.com/keys — free, no
+# credit card required) and the model id to request, e.g.
+# "llama-3.3-70b-versatile" or any id listed at
+# https://console.groq.com/docs/models. Free tier is rate-limited
+# (~30 req/min, ~1,000 req/day per model) but otherwise $0.
+GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_BASE_URL: str = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+
 # ── Logging ──────────────────────────────────────────────────────────────────
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FILE: Path = LOGS_DIR / "app.log"
