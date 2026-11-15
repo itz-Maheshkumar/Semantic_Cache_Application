@@ -173,21 +173,34 @@ Both features are entirely additive: a `CachePipeline` built without `image_cach
 
 ## 🔌 LLM Provider: Mock vs. Live
 
-Every OpenAI call in the app — text generation, vision, and Whisper transcription — can run in two modes:
+Every chat/vision call in the app can run in two modes:
 
 - **Mock** — a fixed canned response, no network call, no API key needed. Lets you exercise the cache/eviction/hybrid-search mechanics for free.
-- **Live** — a real `gpt-4o-mini` call (and real Whisper transcription for audio), so cache-miss responses reflect the actual model instead of a fixed string.
+- **Live** — a real LLM call, so cache-miss responses reflect the actual model instead of a fixed string.
 
-The Streamlit dashboard now picks a sane default automatically instead of always defaulting to mock: each **"Use Mock ..."** checkbox (Live Query Playground, and the Multi-Modal Playground's image/audio tabs) defaults to **checked** when no real `OPENAI_API_KEY` is configured, and **unchecked** the moment a real key is set in `.env` — nothing to remember to toggle between runs. The sidebar's **System Info** panel also shows the current mode at a glance:
+The Streamlit dashboard now picks a sane default automatically instead of always defaulting to mock: each **"Use Mock ..."** checkbox (Live Query Playground, and the Multi-Modal Playground's image/audio tabs) defaults to **checked** when no real key is configured for the active provider, and **unchecked** the moment one is set in `.env` — nothing to remember to toggle between runs. The sidebar's **System Info** panel also shows the current mode at a glance:
 
 ```
-LLM Provider: 🟢 Live — gpt-4o-mini
+LLM Provider: 🟢 Live — OpenAI · gpt-4o-mini
+LLM Provider: 🟢 Live — Hugging Face · meta-llama/Llama-3.1-8B-Instruct
 LLM Provider: 🟡 Not configured (Mock only)
 ```
 
-The Live Query Playground also now catches a failed LLM call (e.g. an invalid or expired key) and shows a clean `st.error(...)` message instead of crashing the page.
+The Live Query Playground also now catches a failed LLM call (e.g. an invalid/expired key, or a billing/quota error) and shows a clean `st.error(...)` message instead of crashing the page.
 
 > **Note:** mock vs. live only changes what a cache **miss** returns. The semantic-cache hit/miss decision itself is driven entirely by query-embedding similarity (`SIMILARITY_THRESHOLD` / `HYBRID_SIMILARITY_THRESHOLD`) and behaves identically either way — switching to a real key makes miss responses genuine, it doesn't change the hit rate.
+
+### Choosing a provider: OpenAI, Hugging Face, or Groq
+
+`LLMClient` (`src/llm.py`) talks to whichever backend `LLM_PROVIDER` in `.env` selects — all three are reached through the same `openai` SDK, since Hugging Face's [Inference Providers](https://huggingface.co/docs/inference-providers) router and [Groq](https://console.groq.com/docs/overview) both speak the identical OpenAI-compatible chat-completions format:
+
+| `LLM_PROVIDER` | Key | Model | Notes |
+|---|---|---|---|
+| `openai` (default) | `OPENAI_API_KEY` | `OPENAI_MODEL` (`gpt-4o-mini`) | Requires OpenAI billing/credit. |
+| `huggingface` | `HF_API_KEY` | `HF_MODEL` (`meta-llama/Llama-3.1-8B-Instruct`) | Open-weight models; get a token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens). Free accounts get no standing monthly credit — only a possible one-time starter credit. |
+| `groq` | `GROQ_API_KEY` | `GROQ_MODEL` (`llama-3.3-70b-versatile`) | Open-weight models, genuinely free tier (no card required); get a key at [console.groq.com/keys](https://console.groq.com/keys). Rate-limited (~30 req/min, ~1,000 req/day per model). |
+
+To switch: set `LLM_PROVIDER` to `huggingface` or `groq` and add the matching key in `.env`, and optionally change the matching `*_MODEL` to any chat model the provider lists. The dashboard's Live/Mock status and defaults follow whichever provider is active automatically. **Audio transcription is unaffected by this setting** — `AudioTranscriber` always uses `OPENAI_API_KEY`/Whisper, mock or not.
 
 ---
 
@@ -200,7 +213,7 @@ The Live Query Playground also now catches a failed LLM call (e.g. an invalid or
 - **Pillow** — Image loading/decoding for multi-modal (image) caching
 - **SQLite** — Persistent request logging and metric storage
 - **Streamlit** — Real-time analytics dashboard & query playground
-- **OpenAI API** — LLM response generation on cache miss, plus vision (image) and Whisper (audio transcription) for multi-modal queries
+- **OpenAI API** — LLM response generation on cache miss, plus vision (image) and Whisper (audio transcription) for multi-modal queries — or **Hugging Face Inference Providers** as a drop-in alternative for text/vision generation (`LLM_PROVIDER=huggingface`)
 - **pytest & flake8** — Automated test suite and code quality linting
 
 ---
@@ -275,7 +288,7 @@ semantic-cache-project/
    ```bash
    cp .env.example .env
    ```
-   Add a real `OPENAI_API_KEY` to enable **live** responses — the dashboard's mock checkboxes automatically default to unchecked once a valid key is detected. Leave the placeholder value in place to keep running fully in **mock** mode (no key required).
+   Add a real `OPENAI_API_KEY` (or set `LLM_PROVIDER=huggingface` and add `HF_API_KEY`) to enable **live** responses — the dashboard's mock checkboxes automatically default to unchecked once a valid key is detected. Leave the placeholder values in place to keep running fully in **mock** mode (no key required). See [LLM Provider: Mock vs. Live](#-llm-provider-mock-vs-live) below for details.
 
 5. **Run the Streamlit Dashboard:**
    ```bash

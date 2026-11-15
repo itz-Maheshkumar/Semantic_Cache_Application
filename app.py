@@ -23,6 +23,11 @@ from src.config import (
     IMAGE_EMBEDDING_MODEL,
     OPENAI_API_KEY,
     OPENAI_MODEL,
+    LLM_PROVIDER,
+    HF_API_KEY,
+    HF_MODEL,
+    GROQ_API_KEY,
+    GROQ_MODEL,
 )
 from src.embedder import Embedder
 from src.image_embedder import ImageEmbedder
@@ -31,21 +36,34 @@ from src.modality import Modality
 from src.pipeline import CachePipeline
 from src.request_logger import RequestLogger
 
+# Per-provider (api_key, placeholder) pairs and display info — used by
+# _llm_configured() and the sidebar's System Info panel below. Keeping this
+# as data (rather than an if/elif per provider) means adding a new
+# OpenAI-compatible provider is just one more entry here.
+_PROVIDER_KEYS = {
+    "openai": (OPENAI_API_KEY, "sk-...your-key-here..."),
+    "huggingface": (HF_API_KEY, "hf_...your-token-here..."),
+    "groq": (GROQ_API_KEY, "gsk_...your-key-here..."),
+}
+_PROVIDER_LABELS = {"openai": "OpenAI", "huggingface": "Hugging Face", "groq": "Groq"}
+_PROVIDER_MODELS = {"openai": OPENAI_MODEL, "huggingface": HF_MODEL, "groq": GROQ_MODEL}
+_PROVIDER_ENV_VARS = {"openai": "OPENAI_API_KEY", "huggingface": "HF_API_KEY", "groq": "GROQ_API_KEY"}
+
 
 def _llm_configured() -> bool:
     """
-    True when a real OpenAI API key is set — i.e. OPENAI_API_KEY is non-empty,
-    isn't the literal placeholder shipped in .env.example, and looks like an
-    OpenAI key. Used to pick a sane default for the "Use Mock ..." checkboxes
+    True when the selected LLM_PROVIDER has a real (non-empty, non-placeholder)
+    API key set. Used to pick a sane default for the "Use Mock ..." checkboxes
     below: mock ON by default with no key configured (so the app never
     crashes out of the box), mock OFF by default once a real key is set (so
     a configured deployment shows real responses without extra clicks).
     """
-    return (
-        bool(OPENAI_API_KEY)
-        and OPENAI_API_KEY.strip() != "sk-...your-key-here..."
-        and OPENAI_API_KEY.startswith("sk-")
-    )
+    key, placeholder = _PROVIDER_KEYS.get(LLM_PROVIDER, _PROVIDER_KEYS["openai"])
+    if not key or key.strip() == placeholder:
+        return False
+    if LLM_PROVIDER == "openai":
+        return key.startswith("sk-")
+    return True
 
 
 LLM_READY = _llm_configured()
@@ -201,10 +219,13 @@ with st.sidebar:
     st.write(f"**Embedding Model:** `{EMBEDDING_MODEL}`")
     st.write(f"**Retrieval Mode:** `{'Hybrid (Vector + BM25)' if hybrid_mode else 'Vector Only'}`")
     if LLM_READY:
-        st.write(f"**LLM Provider:** 🟢 Live — `{OPENAI_MODEL}`")
+        provider_label = _PROVIDER_LABELS.get(LLM_PROVIDER, LLM_PROVIDER)
+        active_model = _PROVIDER_MODELS.get(LLM_PROVIDER, "")
+        st.write(f"**LLM Provider:** 🟢 Live — {provider_label} · `{active_model}`")
     else:
         st.write("**LLM Provider:** 🟡 Not configured (Mock only)")
-        st.caption("Set a real OPENAI_API_KEY in `.env` to enable live responses.")
+        env_var = _PROVIDER_ENV_VARS.get(LLM_PROVIDER, "OPENAI_API_KEY")
+        st.caption(f"Set a real {env_var} in `.env` to enable live responses.")
 
     # Retrieve instances (cached across reruns; live settings are applied below)
     cache, request_logger, pipeline = get_components(similarity_threshold)
@@ -231,7 +252,7 @@ with st.sidebar:
         ttl_hours = st.slider(
             "TTL (hours)",
             min_value=0.5,
-            max_value=24 * 30,  # up to 30 days
+            max_value=24 * 30.0,  # up to 30 days (float, to match min_value/step)
             value=max(float(CACHE_TTL_SECONDS) / 3600.0, 1.0),
             step=0.5,
             help="Entries older than this (since they were cached) are pruned automatically.",
@@ -388,8 +409,6 @@ with tab1:
             with res_col2:
                 st.subheader("Response")
                 st.info(result["response"])
-
-            st.rerun()
 
 # ── TAB 2: Performance Analytics ─────────────────────────────────────────────
 with tab2:
