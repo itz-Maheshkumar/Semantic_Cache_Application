@@ -213,7 +213,7 @@ To switch: set `LLM_PROVIDER` to `huggingface` or `groq` and add the matching ke
 - **Pillow** — Image loading/decoding for multi-modal (image) caching
 - **SQLite** — Persistent request logging and metric storage
 - **Streamlit** — Real-time analytics dashboard & query playground
-- **OpenAI API** — LLM response generation on cache miss, plus vision (image) and Whisper (audio transcription) for multi-modal queries — or **Hugging Face Inference Providers** as a drop-in alternative for text/vision generation (`LLM_PROVIDER=huggingface`)
+- **OpenAI API** — LLM response generation on cache miss, plus vision (image) and Whisper (audio transcription) for multi-modal queries — or **Hugging Face Inference Providers** / **Groq** as drop-in alternatives for text/vision generation (`LLM_PROVIDER=huggingface` or `groq`)
 - **pytest & flake8** — Automated test suite and code quality linting
 
 ---
@@ -236,7 +236,7 @@ semantic-cache-project/
 │   ├── cache.py                 # Semantic Cache Engine (FAISS + Storage)
 │   ├── bm25_index.py            # BM25 keyword search index (hybrid search)
 │   ├── hybrid_search.py         # Vector + BM25 score fusion (hybrid search)
-│   ├── llm.py                   # OpenAI API client wrapper with retries (text + vision)
+│   ├── llm.py                   # Multi-provider LLM client (OpenAI / Hugging Face / Groq) with retries
 │   ├── models.py                # Data models (CacheResult, RequestLog)
 │   ├── request_logger.py        # SQLite logging & KPI aggregator
 │   └── pipeline.py              # Main Cache Pipeline orchestrator
@@ -248,8 +248,12 @@ semantic-cache-project/
 │   └── test_evaluation.py
 ├── scripts/
 │   └── evaluate.py              # Standalone CLI evaluation & benchmark script
+├── docs/
+│   ├── ROADMAP.md               # Planned improvements & task tracker
+│   └── images/                  # Dashboard screenshots
 ├── app.py                       # Streamlit Analytics Dashboard
 ├── requirements.txt             # Python dependencies
+├── pytest.ini                   # pytest configuration (pythonpath, testpaths)
 ├── .env.example                 # Environment variables template
 ├── README.md                    # Project documentation
 └── LICENSE                      # MIT License
@@ -288,7 +292,7 @@ semantic-cache-project/
    ```bash
    cp .env.example .env
    ```
-   Add a real `OPENAI_API_KEY` (or set `LLM_PROVIDER=huggingface` and add `HF_API_KEY`) to enable **live** responses — the dashboard's mock checkboxes automatically default to unchecked once a valid key is detected. Leave the placeholder values in place to keep running fully in **mock** mode (no key required). See [LLM Provider: Mock vs. Live](#-llm-provider-mock-vs-live) below for details.
+   Add a real `OPENAI_API_KEY` (or set `LLM_PROVIDER=huggingface` / `groq` and add `HF_API_KEY` / `GROQ_API_KEY`) to enable **live** responses — the dashboard's mock checkboxes automatically default to unchecked once a valid key is detected. Leave the placeholder values in place to keep running fully in **mock** mode (no key required). See [LLM Provider: Mock vs. Live](#-llm-provider-mock-vs-live) above for details.
 
 5. **Run the Streamlit Dashboard:**
    ```bash
@@ -320,6 +324,12 @@ Run the complete test suite using `pytest`:
 ```bash
 pytest tests/ --verbose
 ```
+
+---
+
+## 🗺️ Roadmap
+
+Planned improvements — near-miss score reporting, published benchmark results, wider test coverage, a FastAPI layer, Docker packaging and cache namespaces — are tracked with their current status in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
